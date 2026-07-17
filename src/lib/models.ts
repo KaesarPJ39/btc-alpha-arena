@@ -53,8 +53,8 @@ export interface RlStateInput {
 }
 
 export class QLearningAgent implements Tunable {
-  private q = new Map<string, Float64Array>();
-  private visits = new Map<string, number>();
+  private q = new Map<number, Float64Array>();
+  private visits = new Map<number, number>();
   private alpha = 0.12;
   private gamma = 0.92;
   private epsilon = 0.25;
@@ -68,7 +68,13 @@ export class QLearningAgent implements Tunable {
   lastAction: Action = 1;
   lastReward = 0;
   rewardHistory: number[] = [];
-  private stateBins = 5;
+  private stateBins = 3;
+  private expS = Array.from({ length: 100 }, () => [0, 0, 0, 0, 0]);
+  private expSN = Array.from({ length: 100 }, () => [0, 0, 0, 0, 0]);
+  private expA = new Uint8Array(100);
+  private expR = new Float64Array(100);
+  private expPtr = 0;
+  private expCount = 0;
 
   get epsilonValue(): number { return this.epsilon; }
 
@@ -84,26 +90,21 @@ export class QLearningAgent implements Tunable {
     this.gamma = 0.98 - this.aggressiveness * 0.10;
   }
 
-  private stateKey(s: RlStateInput): string {
-    return [
-      bin(s.momentum, -1, 1, this.stateBins),
-      bin(s.rsi, -1, 1, this.stateBins),
-      bin(s.volatility, 0, 1, this.stateBins),
-      bin(s.trend, -1, 1, this.stateBins),
-      bin(s.position, 0, 1, this.stateBins),
-    ].join("|");
+  private stateKey(s: RlStateInput): number {
+    const b = this.stateBins;
+    return ((bin(s.momentum, -1, 1, b) * b + bin(s.rsi, -1, 1, b)) * b + bin(s.volatility, 0, 1, b)) * b * b + bin(s.trend, -1, 1, b) * b + bin(s.position, 0, 1, b);
   }
 
-  private row(key: string): Float64Array {
+  private row(key: number): Float64Array {
     let r = this.q.get(key);
     if (!r) {
-      r = new Float64Array(3);
+      r = new Float64Array([1, 1, 1]);
       this.q.set(key, r);
     }
     return r;
   }
 
-  private touch(key: string): number {
+  private touch(key: number): number {
     const v = (this.visits.get(key) ?? 0) + 1;
     this.visits.set(key, v);
     return v;
@@ -172,6 +173,33 @@ export class QLearningAgent implements Tunable {
     // Bias explícito: agresivo da más peso a la acción tomada
     const posteriorAlpha = this.alpha * Math.min(2.5, 1 + 4 / visits);
     qRow[a] += posteriorAlpha * (target - qRow[a]);
+
+    // Experience replay
+    this.expS[this.expPtr][0] = s.momentum;
+    this.expS[this.expPtr][1] = s.rsi;
+    this.expS[this.expPtr][2] = s.volatility;
+    this.expS[this.expPtr][3] = s.trend;
+    this.expS[this.expPtr][4] = s.position;
+    this.expA[this.expPtr] = a;
+    this.expR[this.expPtr] = shaped;
+    this.expSN[this.expPtr][0] = sNext.momentum;
+    this.expSN[this.expPtr][1] = sNext.rsi;
+    this.expSN[this.expPtr][2] = sNext.volatility;
+    this.expSN[this.expPtr][3] = sNext.trend;
+    this.expSN[this.expPtr][4] = sNext.position;
+    this.expPtr = (this.expPtr + 1) % 100;
+    if (this.expCount < 100) this.expCount++;
+    if (this.updates % 4 === 0 && this.expCount >= 5) {
+      for (let k = 0; k < 3; k++) {
+        const idx = Math.floor(Math.random() * this.expCount);
+        const sk: RlStateInput = { momentum: this.expS[idx][0], rsi: this.expS[idx][1], volatility: this.expS[idx][2], trend: this.expS[idx][3], position: this.expS[idx][4] };
+        const snk: RlStateInput = { momentum: this.expSN[idx][0], rsi: this.expSN[idx][1], volatility: this.expSN[idx][2], trend: this.expSN[idx][3], position: this.expSN[idx][4] };
+        const rk = this.row(this.stateKey(sk));
+        const nk = this.row(this.stateKey(snk));
+        const bt = this.expR[idx] + this.gamma * Math.max(nk[0], nk[1], nk[2]);
+        rk[this.expA[idx]] += this.alpha * 0.5 * (bt - rk[this.expA[idx]]);
+      }
+    }
 
     this.totalReward += reward;
     this.lastReward = reward;
@@ -588,13 +616,22 @@ export class StatisticalModel implements Tunable {
     // Prueba 5: Independencia serie (racha): signo de mom5 vs mom15 concordancia
     const streakAlign = mom5 * mom15 > 0 ? Math.sign(mom5) : 0;
 
+    // Pesos adaptativos por régimen de volatilidad
+    const isChoppy = volatility > 0.6;
+    const isTrending = volatility < 0.3;
+    const wMom = isChoppy ? 0.3 : isTrending ? 1.0 : 0.7;
+    const wRsi = isChoppy ? 1.0 : isTrending ? 0.3 : 0.7;
+    const wTrend = isChoppy ? 0.4 : isTrending ? 0.8 : 0.6;
+    const wStreak = isChoppy ? 0.1 : isTrending ? 0.4 : 0.3;
+    const wZret = isChoppy ? 0.5 : 0.2;
+
     // Compuesto: voto ponderado
     const votes =
-      (Math.abs(mom5) > mom5Thr ? Math.sign(mom5) * 0.7 : 0) +
-      (Math.abs(zRSI) > rsiThr ? Math.sign(zRSI) * 0.7 : 0) +
-      (Math.abs(trendScore) > trendThr ? Math.sign(trendScore) * 0.6 : 0) +
-      (streakAlign !== 0 ? streakAlign * 0.3 : 0) +
-      (zRet > this.thresholds.zMeanReversion ? -Math.sign(ret1) * 0.3 : 0);
+      (Math.abs(mom5) > mom5Thr ? Math.sign(mom5) * wMom : 0) +
+      (Math.abs(zRSI) > rsiThr ? Math.sign(zRSI) * wRsi : 0) +
+      (Math.abs(trendScore) > trendThr ? Math.sign(trendScore) * wTrend : 0) +
+      (streakAlign !== 0 ? streakAlign * wStreak : 0) +
+      (zRet > this.thresholds.zMeanReversion ? -Math.sign(ret1) * wZret : 0);
 
     // Penalización por volatilidad: choppy -> no operar
     const volPenalty = clamp(
@@ -792,8 +829,8 @@ export class RandomForestModel implements Tunable {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 5. LSTMModel — RNN simple con tanh (mucho más rápido y estable que LSTM
-// completo para este tamaño de problema). Backprop truncado (BPTT-3).
+// 5. LSTMModel — RNN simple con Leaky ReLU (más rápida que LSTM completo).
+// Backprop truncado (BPTT-7) con gradient clipping y momentum SGD.
 // ════════════════════════════════════════════════════════════════════════════
 
 interface RnnParams {
@@ -826,18 +863,23 @@ export class LSTMModel implements Tunable {
   private trainLoss: number[] = [];
   private initializationDone = false;
   private trainingSteps = 0;
+  private velocity: { W: Float64Array; U: Float64Array; b: Float64Array; Wout: Float64Array; bout: number } | null = null;
   buyThreshold = 0.55;
   sellThreshold = 0.45;
 
   setAggression(level: AggressionLevel): void {
     this.aggressiveness = aggressionToProfile(level);
     this.learningRate = 0.04 + this.aggressiveness * 0.12;
-    this.hiddenSize = Math.round(8 + this.aggressiveness * 8);
-    this.seqLength = Math.round(8 + this.aggressiveness * 8);
+    const _h = Math.round(8 + this.aggressiveness * 8);
+    const _s = Math.round(8 + this.aggressiveness * 8);
     const spread = 0.05 + (1 - this.aggressiveness) * 0.03;
     this.buyThreshold = 0.5 + spread;
     this.sellThreshold = 0.5 - spread;
-    this.initializationDone = false;
+    if (_h !== this.hiddenSize || _s !== this.seqLength) {
+      this.hiddenSize = _h;
+      this.seqLength = _s;
+      this.initializationDone = false;
+    }
   }
 
   private ensureParams(inputSize: number): void {
@@ -854,6 +896,7 @@ export class LSTMModel implements Tunable {
     const Wout = new Float64Array(h);
     for (let i = 0; i < Wout.length; i++) Wout[i] = randomGaussian() * 0.05;
     this.params = { W, U, b, Wout, bout: 0 };
+    this.velocity = { W: new Float64Array(W.length), U: new Float64Array(U.length), b: new Float64Array(b.length), Wout: new Float64Array(Wout.length), bout: 0 };
     this.initializationDone = true;
   }
 
@@ -869,7 +912,7 @@ export class LSTMModel implements Tunable {
     ];
   }
 
-  /** Forward de la celda RNN un paso: h_t = tanh(W*x_t + U*h_{t-1} + b) */
+  /** Forward de la celda RNN un paso: h_t = leaky_relu(W*x_t + U*h_{t-1} + b) */
   private forwardCell(x: number[], hPrev: number[] | Float64Array): Float64Array {
     const h = this.hiddenSize;
     const p = this.params;
@@ -878,7 +921,7 @@ export class LSTMModel implements Tunable {
       let s = p.b[j];
       for (let k = 0; k < this.inputSize; k++) s += p.W[j * this.inputSize + k] * x[k];
       for (let k = 0; k < h; k++) s += p.U[j * h + k] * hPrev[k];
-      hh[j] = Math.tanh(s);
+      hh[j] = s > 0 ? s : 0.01 * s;
     }
     return hh;
   }
@@ -900,13 +943,13 @@ export class LSTMModel implements Tunable {
     return { output: sigmoid(logit), hStates };
   }
 
-  /** BPTT simplificado para RNN tanh */
+  /** BPTT simplificado para RNN Leaky ReLU */
   private bptt(seq: number[][], target: number, hStates: number[][]): number {
     const p = this.params;
     const h = this.hiddenSize;
     const xSize = this.inputSize;
     const T = hStates.length;
-    const steps = Math.min(3, T);
+    const steps = Math.min(7, T);
 
     const lastH = hStates[T - 1];
     let logit = p.bout;
@@ -919,7 +962,7 @@ export class LSTMModel implements Tunable {
     const gradB = new Float64Array(h);
     const gradWout = new Float64Array(h);
     for (let j = 0; j < h; j++) gradWout[j] = dLogit * lastH[j];
-    const gradBout = dLogit;
+    let gradBout = dLogit;
 
     let dhNext = new Float64Array(h);
     for (let j = 0; j < h; j++) dhNext[j] = dLogit * p.Wout[j];
@@ -929,9 +972,9 @@ export class LSTMModel implements Tunable {
       const hPrev = t > 0 ? hStates[t - 1] : new Array(h).fill(0);
       const x = seq[t];
 
-      // dh_t = dh_next * (1 - tanh^2(h_t))
+      // dh_t = dh_next * leaky_relu'(h_t)
       const dh = new Float64Array(h);
-      for (let j = 0; j < h; j++) dh[j] = dhNext[j] * (1 - hState[j] * hState[j]);
+      for (let j = 0; j < h; j++) dh[j] = dhNext[j] * (hState[j] > 0 ? 1 : 0.01);
 
       for (let j = 0; j < h; j++) {
         gradB[j] += dh[j];
@@ -946,12 +989,30 @@ export class LSTMModel implements Tunable {
       }
     }
 
+    // Gradient clipping
+    let gNorm = 0;
+    for (let i = 0; i < gradW.length; i++) gNorm += gradW[i] * gradW[i];
+    for (let i = 0; i < gradU.length; i++) gNorm += gradU[i] * gradU[i];
+    for (let i = 0; i < gradB.length; i++) gNorm += gradB[i] * gradB[i];
+    for (let i = 0; i < gradWout.length; i++) gNorm += gradWout[i] * gradWout[i];
+    gNorm += gradBout * gradBout;
+    const gScale = gNorm > 1.0 ? 1.0 / Math.sqrt(gNorm) : 1.0;
+    if (gScale < 1.0) {
+      for (let i = 0; i < gradW.length; i++) gradW[i] *= gScale;
+      for (let i = 0; i < gradU.length; i++) gradU[i] *= gScale;
+      for (let i = 0; i < gradB.length; i++) gradB[i] *= gScale;
+      for (let i = 0; i < gradWout.length; i++) gradWout[i] *= gScale;
+      gradBout *= gScale;
+    }
+    // Momentum SGD
+    const mu = 0.9;
     const lr = this.learningRate;
-    for (let i = 0; i < p.W.length; i++) p.W[i] -= lr * gradW[i];
-    for (let i = 0; i < p.U.length; i++) p.U[i] -= lr * gradU[i];
-    for (let i = 0; i < p.b.length; i++) p.b[i] -= lr * gradB[i];
-    for (let i = 0; i < p.Wout.length; i++) p.Wout[i] -= lr * gradWout[i];
-    p.bout -= lr * gradBout;
+    for (let i = 0; i < p.W.length; i++) { const v = mu * this.velocity!.W[i] + lr * gradW[i]; this.velocity!.W[i] = v; p.W[i] -= v; }
+    for (let i = 0; i < p.U.length; i++) { const v = mu * this.velocity!.U[i] + lr * gradU[i]; this.velocity!.U[i] = v; p.U[i] -= v; }
+    for (let i = 0; i < p.b.length; i++) { const v = mu * this.velocity!.b[i] + lr * gradB[i]; this.velocity!.b[i] = v; p.b[i] -= v; }
+    for (let i = 0; i < p.Wout.length; i++) { const v = mu * this.velocity!.Wout[i] + lr * gradWout[i]; this.velocity!.Wout[i] = v; p.Wout[i] -= v; }
+    this.velocity!.bout = mu * this.velocity!.bout + lr * gradBout;
+    p.bout -= this.velocity!.bout;
 
     return -(target * Math.log(outProb + 1e-9) + (1 - target) * Math.log(1 - outProb + 1e-9));
   }
