@@ -838,14 +838,12 @@ export class RandomForestModel implements Tunable {
     let noImprove = 0;
     for (let t = 0; t < extraTrees; t++) {
       if (this.trees.length >= this.nEstimators) break;
+      // Bootstrap sample CON reemplazo (igual que train())
       const sampleIdx: number[] = [];
-      const used = new Set<number>();
       for (let i = 0; i < n; i++) {
-        let r: number;
-        do { r = Math.floor(Math.random() * n); } while (used.has(r));
-        used.add(r);
-        sampleIdx.push(r);
+        sampleIdx.push(Math.floor(Math.random() * n));
       }
+      const used = new Set(sampleIdx);
       const tree = buildGiniTree(X, y, sampleIdx, this.maxDepth, 4, this.nFeatSample);
       this.trees.push(tree);
       // OOB check: stop if no improvement in 3 consecutive trees

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Activity, Bitcoin, CircleDot, KeyRound, Pause, Play, RotateCcw, Wifi } from "lucide-react";
+import { Activity, Bitcoin, CircleDot, KeyRound, Loader2, Pause, Play, RotateCcw, Wifi } from "lucide-react";
 import type { MarketStats } from "@/lib/engine";
 import { fmtPct, fmtTime, fmtUSD } from "@/lib/format";
 import { Button } from "@/components/ui/button";
@@ -12,7 +12,7 @@ interface Props {
   statusDetail: string;
   running: boolean;
   onToggle: () => void;
-  onReset: () => void;
+  onReset: () => Promise<void>;
 }
 
 export function Header({ market, status, statusDetail, running, onToggle, onReset }: Props) {
@@ -21,6 +21,7 @@ export function Header({ market, status, statusDetail, running, onToggle, onRese
   const [showReset, setShowReset] = useState(false);
   const [pwd, setPwd] = useState("");
   const [pwdError, setPwdError] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
   const pwdRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -37,18 +38,26 @@ export function Header({ market, status, statusDetail, running, onToggle, onRese
     if (showReset) {
       setPwd("");
       setPwdError(false);
+      setIsResetting(false);
       setTimeout(() => pwdRef.current?.focus(), 50);
     }
   }, [showReset]);
 
-  const handleReset = () => {
-    if (pwd === RESET_PASSWORD) {
-      setShowReset(false);
-      onReset();
-    } else {
+  const handleReset = async () => {
+    if (pwd !== RESET_PASSWORD) {
       setPwdError(true);
       setPwd("");
       pwdRef.current?.focus();
+      return;
+    }
+    setIsResetting(true);
+    setShowReset(false);
+    try {
+      await onReset();
+    } catch {
+      // Error ya se maneja dentro del engine (status = error + emit)
+    } finally {
+      setIsResetting(false);
     }
   };
 
@@ -133,10 +142,11 @@ export function Header({ market, status, statusDetail, running, onToggle, onRese
             variant="outline"
             size="sm"
             onClick={() => setShowReset(true)}
-            className="gap-1.5 border-rose-500/30 bg-card/60 text-xs text-rose-400 hover:bg-rose-500/10 hover:text-rose-300"
+            disabled={isResetting}
+            className="gap-1.5 border-rose-500/30 bg-card/60 text-xs text-rose-400 hover:bg-rose-500/10 hover:text-rose-300 disabled:opacity-50"
           >
-            <RotateCcw className="h-3.5 w-3.5" />
-            Reset
+            {isResetting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+            {isResetting ? "Reiniciando…" : "Reset"}
           </Button>
         </div>
       </div>
@@ -203,7 +213,8 @@ export function Header({ market, status, statusDetail, running, onToggle, onRese
                 variant="outline"
                 size="sm"
                 onClick={() => setShowReset(false)}
-                className="text-xs"
+                disabled={isResetting}
+                className="text-xs disabled:opacity-50"
               >
                 Cancelar
               </Button>
@@ -211,10 +222,11 @@ export function Header({ market, status, statusDetail, running, onToggle, onRese
                 variant="outline"
                 size="sm"
                 onClick={handleReset}
-                className="gap-1.5 border-rose-500/40 bg-rose-500/10 text-xs text-rose-400 hover:bg-rose-500/20"
+                disabled={isResetting}
+                className="gap-1.5 border-rose-500/40 bg-rose-500/10 text-xs text-rose-400 hover:bg-rose-500/20 disabled:opacity-50"
               >
-                <RotateCcw className="h-3.5 w-3.5" />
-                Reiniciar
+                {isResetting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                {isResetting ? "Reiniciando…" : "Reiniciar"}
               </Button>
             </div>
           </div>

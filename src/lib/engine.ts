@@ -438,7 +438,7 @@ export class TradingEngine {
     this.listener?.();
   }
 
-  async start(): Promise<void> {
+  async start(options?: { resetAfterBacktest?: boolean }): Promise<void> {
     const gen = ++this.startGeneration;
     try {
       this.status = "loading";
@@ -477,10 +477,31 @@ export class TradingEngine {
       }
 
       if (this.aborted || gen !== this.startGeneration) return;
+
+      // Si es un reset, volver a $100k y limpiar historial tras el backtest
+      if (options?.resetAfterBacktest) {
+        this.accounts = {
+          rl: new MarginAccount("rl"),
+          xgb: new MarginAccount("xgb"),
+          stat: new MarginAccount("stat"),
+          rf: new MarginAccount("rf"),
+          lstm: new MarginAccount("lstm"),
+        };
+        this.equitySeries = [];
+        this.trades = [];
+        this.bhInterest = 0;
+      }
+
       this.status = "live";
       this.statusDetail = "En vivo · actualizando cada 3 s";
       this.market = await fetchSpotPrice().catch(() => this.market);
       if (this.aborted || gen !== this.startGeneration) return;
+
+      // Establecer baseline buy-and-hold con precio actual y grabar equity inicial
+      const livePrice = this.market.price || this.closes[this.closes.length - 1] || 100_000;
+      this.bhBtc = LOAN_PRINCIPAL / livePrice;
+      this.recordEquity(livePrice, Date.now(), true);
+
       this.emit();
       this.timer = setInterval(() => void this.liveTick(), 3000);
     } catch (e) {
@@ -549,8 +570,8 @@ export class TradingEngine {
     this.statusDetail = "Reiniciando simulación…";
     this.emit();
 
-    // 5. Relanzar todo el pipeline
-    await this.start();
+    // 5. Relanzar pipeline — tras el backtest las cuentas vuelven a $100k
+    await this.start({ resetAfterBacktest: true });
   }
 
   toggleRunning(): void {
