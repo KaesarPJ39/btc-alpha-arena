@@ -30,6 +30,7 @@ export default function App() {
         statusDetail={snap.statusDetail}
         running={snap.running}
         onToggle={sim.toggleRunning}
+        onReset={sim.reset}
       />
       <div className="mx-auto flex max-w-[1500px] gap-0 px-0">
         <Sidebar />

@@ -6,10 +6,16 @@ export function useTradingSim() {
   const engineRef = useRef<TradingEngine | null>(null);
   const [snap, setSnap] = useState<EngineSnapshot | null>(null);
 
-  useEffect(() => {
+  const startEngine = useCallback(() => {
     const engine = new TradingEngine();
     engineRef.current = engine;
     engine.onUpdate(() => setSnap(engine.snapshot()));
+    void engine.start();
+    return engine;
+  }, []);
+
+  useEffect(() => {
+    const engine = startEngine();
     let cancelled = false;
     void engine.start().then(() => {
       if (cancelled) engine.stop();
@@ -19,7 +25,7 @@ export function useTradingSim() {
       engine.stop();
       engineRef.current = null;
     };
-  }, []);
+  }, [startEngine]);
 
   const toggleRunning = useCallback(() => {
     engineRef.current?.toggleRunning();
@@ -29,5 +35,10 @@ export function useTradingSim() {
     engineRef.current?.setAggression(id, level);
   }, []);
 
-  return { snap, toggleRunning, setAggression };
+  const reset = useCallback(() => {
+    engineRef.current?.stop();
+    startEngine();
+  }, [startEngine]);
+
+  return { snap, toggleRunning, setAggression, reset };
 }

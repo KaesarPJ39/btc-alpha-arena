@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Activity, Bitcoin, CircleDot, Pause, Play, Wifi } from "lucide-react";
+import { Activity, Bitcoin, CircleDot, KeyRound, Pause, Play, RotateCcw, Wifi } from "lucide-react";
 import type { MarketStats } from "@/lib/engine";
 import { fmtPct, fmtTime, fmtUSD } from "@/lib/format";
 import { Button } from "@/components/ui/button";
+
+const RESET_PASSWORD = "admin27";
 
 interface Props {
   market: MarketStats;
@@ -10,11 +12,16 @@ interface Props {
   statusDetail: string;
   running: boolean;
   onToggle: () => void;
+  onReset: () => void;
 }
 
-export function Header({ market, status, statusDetail, running, onToggle }: Props) {
+export function Header({ market, status, statusDetail, running, onToggle, onReset }: Props) {
   const prevPrice = useRef(0);
   const [flash, setFlash] = useState<"up" | "down" | null>(null);
+  const [showReset, setShowReset] = useState(false);
+  const [pwd, setPwd] = useState("");
+  const [pwdError, setPwdError] = useState(false);
+  const pwdRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (prevPrice.current && market.price !== prevPrice.current) {
@@ -25,6 +32,25 @@ export function Header({ market, status, statusDetail, running, onToggle }: Prop
     }
     prevPrice.current = market.price;
   }, [market.price]);
+
+  useEffect(() => {
+    if (showReset) {
+      setPwd("");
+      setPwdError(false);
+      setTimeout(() => pwdRef.current?.focus(), 50);
+    }
+  }, [showReset]);
+
+  const handleReset = () => {
+    if (pwd === RESET_PASSWORD) {
+      setShowReset(false);
+      onReset();
+    } else {
+      setPwdError(true);
+      setPwd("");
+      pwdRef.current?.focus();
+    }
+  };
 
   const up = market.change24h >= 0;
 
@@ -76,7 +102,7 @@ export function Header({ market, status, statusDetail, running, onToggle }: Prop
         </div>
 
         {/* Estado */}
-        <div className="ml-auto flex items-center gap-4">
+        <div className="ml-auto flex items-center gap-3">
           <div className="hidden items-center gap-2 md:flex">
             <span
               className={`h-2 w-2 rounded-full ${
@@ -103,6 +129,15 @@ export function Header({ market, status, statusDetail, running, onToggle }: Prop
             {running ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
             {running ? "Pausar" : "Reanudar"}
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowReset(true)}
+            className="gap-1.5 border-rose-500/30 bg-card/60 text-xs text-rose-400 hover:bg-rose-500/10 hover:text-rose-300"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            Reset
+          </Button>
         </div>
       </div>
 
@@ -125,6 +160,63 @@ export function Header({ market, status, statusDetail, running, onToggle }: Prop
                 ${(market.volume24h / 1e9).toFixed(2)}B
               </span>
             </span>
+          </div>
+        </div>
+      )}
+
+      {/* Diálogo de reset con contraseña */}
+      {showReset && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="glass-card mx-4 w-full max-w-sm rounded-2xl border border-rose-500/20 p-6 shadow-2xl">
+            <div className="mb-4 flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-rose-500/10">
+                <KeyRound className="h-5 w-5 text-rose-400" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold">Reiniciar simulación</h3>
+                <p className="text-[11px] text-muted-foreground">
+                  Se borrarán todos los datos de los 5 modelos
+                </p>
+              </div>
+            </div>
+            <p className="mb-3 text-[11px] leading-relaxed text-muted-foreground/80">
+              Esto reiniciará equity, trades, historial de modelos y volverá al estado inicial con $100,000 por cuenta. La acción no se puede deshacer.
+            </p>
+            <input
+              ref={pwdRef}
+              type="password"
+              placeholder="Contraseña"
+              value={pwd}
+              onChange={(e) => { setPwd(e.target.value); setPwdError(false); }}
+              onKeyDown={(e) => e.key === "Enter" && handleReset()}
+              className={`mb-3 w-full rounded-lg border bg-card/60 px-3 py-2 text-sm outline-none transition-colors placeholder:text-muted-foreground/50 focus:ring-1 ${
+                pwdError
+                  ? "border-rose-500/60 focus:border-rose-500 focus:ring-rose-500/30"
+                  : "border-border/60 focus:border-emerald-500 focus:ring-emerald-500/30"
+              }`}
+            />
+            {pwdError && (
+              <p className="mb-2 text-[11px] font-medium text-rose-400">Contraseña incorrecta</p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowReset(false)}
+                className="text-xs"
+              >
+                Cancelar
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleReset}
+                className="gap-1.5 border-rose-500/40 bg-rose-500/10 text-xs text-rose-400 hover:bg-rose-500/20"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                Reiniciar
+              </Button>
+            </div>
           </div>
         </div>
       )}

@@ -412,6 +412,7 @@ export class TradingEngine {
     rf: 0.5,
     lstm: 0.5,
   };
+  private lastStatOutcome: boolean | undefined = undefined;
 
   private timer: ReturnType<typeof setInterval> | null = null;
   private listener: (() => void) | null = null;
@@ -591,7 +592,15 @@ export class TradingEngine {
     this.rlAgent.learn(sRl, actionRl, reward, this.rlState(nextIdx, this.accounts.rl, nextPrice));
 
     // ── Statistical ──
-    const statRes = this.statModel.predict(f);
+    const statRes = this.statModel.predict(f, this.lastStatOutcome);
+    // Compute outcome for adaptive threshold: was previous signal correct?
+    if (i > 0) {
+      const prevPrice = this.minuteCloses[i - 1] ?? price;
+      const priceUp = price > prevPrice;
+      if (this.lastSignals.stat === "buy") this.lastStatOutcome = priceUp;
+      else if (this.lastSignals.stat === "sell") this.lastStatOutcome = !priceUp;
+      else this.lastStatOutcome = undefined;
+    }
     this.lastSignals.stat = statRes.signal;
     this.lastProbabilities.stat = statRes.probability;
     if (!live || ts - this.accounts.stat.lastTradeTs >= COOLDOWN_MS) {

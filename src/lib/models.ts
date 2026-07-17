@@ -57,11 +57,11 @@ export class QLearningAgent implements Tunable {
   private visits = new Map<number, number>();
   private alpha = 0.12;
   private gamma = 0.92;
+  private lambda = 0.7;
   private epsilon = 0.25;
   readonly epsilonMin = 0.03;
   readonly epsilonDecay = 0.9985;
   private aggressiveness = 0.5;
-  private recentRewards: number[] = [];
   private lastState: RlStateInput = { momentum: 0, rsi: 0, volatility: 0, trend: 0, position: 0 };
   totalReward = 0;
   updates = 0;
@@ -75,6 +75,12 @@ export class QLearningAgent implements Tunable {
   private expR = new Float64Array(100);
   private expPtr = 0;
   private expCount = 0;
+  // Eligibility traces: ring buffer of recent (stateKey, action) pairs
+  private traceKeys: number[] = new Array(12).fill(0);
+  private traceActions: number[] = new Array(12).fill(0);
+  private traceLen = 0;
+  private tracePtr = 0;
+  private readonly TRACE_CAP = 12;
 
   get epsilonValue(): number { return this.epsilon; }
 
@@ -139,40 +145,32 @@ export class QLearningAgent implements Tunable {
     return a;
   }
 
-  /** Aprende con recompensa = Δequity penalizada por varianza reciente */
+  /** Aprende con eligibility traces (λ-return) y recompensa directa = Δequity */
   learn(s: RlStateInput, a: Action, reward: number, sNext: RlStateInput): void {
     const key = this.stateKey(s);
     const qRow = this.row(key);
     const nextRow = this.row(this.stateKey(sNext));
     const bestNext = Math.max(nextRow[0], nextRow[1], nextRow[2]);
 
-    // Recompensa moldeada por riesgo: penaliza oscilaciones recientes
-    this.recentRewards.push(reward);
-    if (this.recentRewards.length > 30) this.recentRewards.shift();
-    const vr =
-      this.recentRewards.length > 5
-        ? this.recentRewards.reduce(
-            (acc, x) => acc + x,
-            0
-          ) / this.recentRewards.length
-        : 0;
-    const variance = this.recentRewards.length
-      ? this.recentRewards.reduce(
-          (acc, x) => acc + (x - vr) ** 2,
-          0
-        ) / Math.max(1, this.recentRewards.length)
-      : 0;
-    const sharpeLike =
-      variance > 1e-9
-        ? reward * (1 + 0.3 * Math.sign(reward) * (Math.abs(reward) / Math.sqrt(variance + 1e-9)))
-        : reward;
-    const shaped = sharpeLike;
+    const target = reward + this.gamma * bestNext;
+    const delta = target - qRow[a];
 
-    const target = shaped + this.gamma * bestNext;
-    const visits = this.visits.get(key) ?? 1;
-    // Bias explícito: agresivo da más peso a la acción tomada
-    const posteriorAlpha = this.alpha * Math.min(2.5, 1 + 4 / visits);
-    qRow[a] += posteriorAlpha * (target - qRow[a]);
+    // Record current (state, action) in eligibility trace buffer
+    this.traceKeys[this.tracePtr] = key;
+    this.traceActions[this.tracePtr] = a;
+    this.tracePtr = (this.tracePtr + 1) % this.TRACE_CAP;
+    if (this.traceLen < this.TRACE_CAP) this.traceLen++;
+
+    // Update all recent state-actions with exponentially decaying influence
+    const gammaLambda = this.gamma * this.lambda;
+    for (let i = 0; i < this.traceLen; i++) {
+      const age = this.traceLen - 1 - i;
+      const influence = Math.pow(gammaLambda, age);
+      const tKey = this.traceKeys[(this.tracePtr - this.traceLen + i + this.TRACE_CAP) % this.TRACE_CAP];
+      const tAct = this.traceActions[(this.tracePtr - this.traceLen + i + this.TRACE_CAP) % this.TRACE_CAP];
+      const tRow = this.row(tKey);
+      tRow[tAct] += this.alpha * delta * influence;
+    }
 
     // Experience replay
     this.expS[this.expPtr][0] = s.momentum;
@@ -181,7 +179,7 @@ export class QLearningAgent implements Tunable {
     this.expS[this.expPtr][3] = s.trend;
     this.expS[this.expPtr][4] = s.position;
     this.expA[this.expPtr] = a;
-    this.expR[this.expPtr] = shaped;
+    this.expR[this.expPtr] = reward;
     this.expSN[this.expPtr][0] = sNext.momentum;
     this.expSN[this.expPtr][1] = sNext.rsi;
     this.expSN[this.expPtr][2] = sNext.volatility;
@@ -409,6 +407,8 @@ export class GradientBoostingModel implements Tunable {
   private maxDepth = 3;
   private lambda = 1.0;
   private learningRate = 0.08;
+  private baseLearningRate = 0.08;
+  private subsample = 0.8;
   private aggressiveness = 0.5;
   private lastProbability = 0.5;
   buyThreshold = 0.56;
@@ -425,6 +425,7 @@ export class GradientBoostingModel implements Tunable {
     this.maxTrees = Math.round(30 + this.aggressiveness * 30);
     this.maxDepth = 2 + Math.round(this.aggressiveness * 2);
     this.learningRate = 0.05 + this.aggressiveness * 0.10;
+    this.baseLearningRate = this.learningRate;
     this.lambda = 1.5 - this.aggressiveness * 0.8;
     const spread = 0.07 + (1 - this.aggressiveness) * 0.05;
     this.buyThreshold = 0.5 + spread;
@@ -443,24 +444,42 @@ export class GradientBoostingModel implements Tunable {
     let scores = new Array(X.length).fill(this.baseScore);
     this.trees = [];
     this.trainLoss = [];
-    const allIdx = X.map((_, i) => i);
+    this.learningRate = this.baseLearningRate;
+    const n = X.length;
+    const subSize = Math.round(n * this.subsample);
+    let bestLoss = Infinity;
+    let noImprove = 0;
     for (let t = 0; t < this.maxTrees; t++) {
-      const grad = new Array(X.length);
-      const hess = new Array(X.length);
+      // Subsample for this tree
+      const subIdx: number[] = [];
+      const used = new Set<number>();
+      for (let k = 0; k < subSize; k++) {
+        let r: number;
+        do { r = Math.floor(Math.random() * n); } while (used.has(r));
+        used.add(r);
+        subIdx.push(r);
+      }
+      const grad = new Array(n);
+      const hess = new Array(n);
       let loss = 0;
-      for (let i = 0; i < X.length; i++) {
+      for (let i = 0; i < n; i++) {
         const p = sigmoid(scores[i]);
         grad[i] = p - y[i];
         hess[i] = Math.max(p * (1 - p), 1e-4);
-        loss += -(
-          y[i] * Math.log(p + 1e-9) +
-          (1 - y[i]) * Math.log(1 - p + 1e-9)
-        );
+        loss += -(y[i] * Math.log(p + 1e-9) + (1 - y[i]) * Math.log(1 - p + 1e-9));
       }
-      this.trainLoss.push(loss / X.length);
-      const tree = buildGradTree(X, grad, hess, allIdx, this.maxDepth, this.lambda);
+      this.trainLoss.push(loss / n);
+      // Early stopping: stop if loss didn't improve by 0.001 in 5 trees
+      if (loss / n < bestLoss - 0.001) {
+        bestLoss = loss / n;
+        noImprove = 0;
+      } else {
+        noImprove++;
+        if (noImprove >= 5 && this.trees.length >= 10) break;
+      }
+      const tree = buildGradTree(X, grad, hess, subIdx, this.maxDepth, this.lambda);
       this.trees.push(tree);
-      for (let i = 0; i < X.length; i++) {
+      for (let i = 0; i < n; i++) {
         scores[i] += this.learningRate * predictTree(tree, X[i]);
       }
     }
@@ -478,16 +497,27 @@ export class GradientBoostingModel implements Tunable {
       return;
     }
     this.nFeatures = X[0].length;
-    const allIdx = X.map((_, i) => i);
+    const n = X.length;
+    const subSize = Math.round(n * this.subsample);
+    // Decay LR by 3% each incremental round (never below 20% of base)
+    this.learningRate = Math.max(this.baseLearningRate * 0.2, this.learningRate * 0.97);
     for (let t = 0; t < extraTrees; t++) {
-      const grad = new Array(X.length);
-      const hess = new Array(X.length);
-      for (let i = 0; i < X.length; i++) {
+      const subIdx: number[] = [];
+      const used = new Set<number>();
+      for (let k = 0; k < subSize; k++) {
+        let r: number;
+        do { r = Math.floor(Math.random() * n); } while (used.has(r));
+        used.add(r);
+        subIdx.push(r);
+      }
+      const grad = new Array(n);
+      const hess = new Array(n);
+      for (let i = 0; i < n; i++) {
         const p = this.predictProbaRaw(X[i]);
         grad[i] = p - y[i];
         hess[i] = Math.max(p * (1 - p), 1e-4);
       }
-      const tree = buildGradTree(X, grad, hess, allIdx, this.maxDepth, this.lambda);
+      const tree = buildGradTree(X, grad, hess, subIdx, this.maxDepth, this.lambda);
       this.trees.push(tree);
       if (this.trees.length > this.maxTrees + 20) this.trees.shift();
     }
@@ -558,10 +588,16 @@ export class StatisticalModel implements Tunable {
     r2TrendMin: 0.05,
     volatilityPenalty: 0.8,
   };
-  // Pruebas acumuladas
-  private nObs = 0;
-  private cumulativeMean = 0;
-  private cumulativeM2 = 0; // para varianza incremental
+  // Rolling window Welford (últimas 200 obs para adaptarse a cambios de régimen)
+  private readonly WINDOW = 200;
+  private winBuf: number[] = [];
+  private winMean = 0;
+  private winM2 = 0;
+  private winCount = 0;
+  // Adaptive threshold: track recent hit rate
+  private recentHits = 0;
+  private recentTotal = 0;
+  private adaptiveOffset = 0;
 
   setAggression(level: AggressionLevel): void {
     this.aggressiveness = aggressionToProfile(level);
@@ -578,7 +614,7 @@ export class StatisticalModel implements Tunable {
    * Indicadores esperados (en orden, normalizados a ~[-1,1] excepto vol):
    * [ret1, ret3, rsi, macdHist, volatility, mom5, mom15, ema9_21, ema21_50, price_ema50]
    */
-  predict(features: number[]): { signal: "buy" | "sell" | "hold"; probability: number; composite: number } {
+  predict(features: number[], lastOutcome?: boolean): { signal: "buy" | "sell" | "hold"; probability: number; composite: number } {
     const [
       ret1,
       _ret3,
@@ -592,14 +628,37 @@ export class StatisticalModel implements Tunable {
       price_ema50,
     ] = features;
 
-    // Prueba 1: Z-score del último retorno vs media histórica incremental (one-sample)
-    this.nObs++;
-    const delta = ret1 - this.cumulativeMean;
-    this.cumulativeMean += delta / this.nObs;
-    this.cumulativeM2 += delta * (ret1 - this.cumulativeMean);
-    const variance = this.nObs > 1 ? this.cumulativeM2 / (this.nObs - 1) : 1e-6;
+    // Rolling window Welford: maintain stats over last WINDOW observations
+    if (this.winCount >= this.WINDOW) {
+      const old = this.winBuf[0];
+      const deltaOld = old - this.winMean;
+      this.winMean -= deltaOld / this.WINDOW;
+      const deltaNew = old - this.winMean;
+      this.winM2 -= deltaOld * deltaNew;
+      this.winBuf.shift();
+    } else {
+      this.winCount++;
+    }
+    const delta = ret1 - this.winMean;
+    this.winMean += delta / this.winCount;
+    const delta2 = ret1 - this.winMean;
+    this.winM2 += delta * delta2;
+    const variance = this.winCount > 1 ? this.winM2 / (this.winCount - 1) : 1e-6;
     const sd = Math.sqrt(variance) || 1e-6;
     const zRet = Math.abs(ret1) / sd;
+    this.winBuf.push(ret1);
+
+    // Adaptive threshold: lower if hitting, raise if missing
+    if (lastOutcome !== undefined) {
+      this.recentTotal++;
+      if (lastOutcome) this.recentHits++;
+      if (this.recentTotal >= 20) {
+        const hitRate = this.recentHits / this.recentTotal;
+        this.adaptiveOffset = (hitRate - 0.5) * 0.15;
+        this.recentHits = 0;
+        this.recentTotal = 0;
+      }
+    }
 
     // Prueba 2: Momentum5 direccional
     const mom5Thr = 0.12 + (1 - this.aggressiveness) * 0.08;
@@ -641,7 +700,9 @@ export class StatisticalModel implements Tunable {
     );
     const score = votes * volPenalty;
     this.lastScore = score;
-    const threshold = 0.45 + (1 - this.aggressiveness) * 0.25;
+    // Adaptive threshold: se ajusta según hit rate reciente
+    const baseThreshold = 0.45 + (1 - this.aggressiveness) * 0.25;
+    const threshold = clamp(baseThreshold - this.adaptiveOffset, 0.2, 0.7);
     let signal: "buy" | "sell" | "hold" = "hold";
     if (score > threshold) signal = "buy";
     else if (score < -threshold) signal = "sell";
@@ -657,8 +718,8 @@ export class StatisticalModel implements Tunable {
       probability: this.lastProbability,
       signal: this.lastSignal,
       confidence: clamp(Math.abs(this.lastScore) / 3, 0, 1),
-      sampleCount: this.nObs,
-      trainProgress: clamp(this.nObs / 2000, 0, 1),
+      sampleCount: this.winCount,
+      trainProgress: clamp(this.winCount / 200, 0, 1),
       lastTrainAt: this.lastTrainAt || "Continuo",
       extras: {
         zMomentum: this.thresholds.zMomentum,
@@ -766,30 +827,45 @@ export class RandomForestModel implements Tunable {
     return this.lastProbability;
   }
 
-  /** Añade árboles en caliente sin reentrenar todo */
+  /** Añade árboles en caliente con early stopping por OOB */
   addTrees(X: number[][], y: number[], extraTrees = 8): void {
     if (X.length < 30 || this.trees.length === 0) {
       this.train(X, y);
       return;
     }
     const n = X.length;
-    const acc = new Array(this.nFeatures).fill(0);
+    let bestOOB = this.oobEstimate;
+    let noImprove = 0;
     for (let t = 0; t < extraTrees; t++) {
+      if (this.trees.length >= this.nEstimators) break;
       const sampleIdx: number[] = [];
-      for (let i = 0; i < n; i++)
-        sampleIdx.push(Math.floor(Math.random() * n));
-      const tree = buildGiniTree(
-        X,
-        y,
-        sampleIdx,
-        this.maxDepth,
-        4,
-        this.nFeatSample
-      );
+      const used = new Set<number>();
+      for (let i = 0; i < n; i++) {
+        let r: number;
+        do { r = Math.floor(Math.random() * n); } while (used.has(r));
+        used.add(r);
+        sampleIdx.push(r);
+      }
+      const tree = buildGiniTree(X, y, sampleIdx, this.maxDepth, 4, this.nFeatSample);
       this.trees.push(tree);
-      if (this.trees.length > this.nEstimators + 20) this.trees.shift();
-      countFeatureUsage(tree, acc);
+      // OOB check: stop if no improvement in 3 consecutive trees
+      const oobIdx = X.map((_, i) => i).filter((i) => !used.has(i));
+      if (oobIdx.length > 0) {
+        let correct = 0;
+        for (const i of oobIdx) {
+          if (this.predictIdxMajority(X[i]) === y[i]) correct++;
+        }
+        const oobNow = correct / oobIdx.length;
+        if (oobNow > bestOOB + 0.005) {
+          bestOOB = oobNow;
+          noImprove = 0;
+        } else {
+          noImprove++;
+          if (noImprove >= 3) break;
+        }
+      }
     }
+    this.oobEstimate = bestOOB;
     const all = new Array(this.nFeatures).fill(0);
     for (const tr of this.trees) countFeatureUsage(tr, all);
     const total = all.reduce((a, b) => a + b, 0) || 1;
@@ -850,10 +926,12 @@ function randomGaussian(): number {
 }
 
 export class LSTMModel implements Tunable {
-  private hiddenSize = 8;
+  private hiddenSize = 10;
   private seqLength = 12;
   private inputSize = 10;
   private params!: RnnParams;
+  private lnGamma!: Float64Array; // Layer Norm gain
+  private lnBeta!: Float64Array;  // Layer Norm bias
   private aggressiveness = 0.5;
   private learningRate = 0.005;
   private samples = 0;
@@ -869,6 +947,8 @@ export class LSTMModel implements Tunable {
     mb: Float64Array; vb: Float64Array;
     mWout: Float64Array; vWout: Float64Array;
     mbout: number; vbout: number;
+    mLnGamma: Float64Array; vLnGamma: Float64Array;
+    mLnBeta: Float64Array; vLnBeta: Float64Array;
     t: number;
   } | null = null;
   private gradNormEMA = 1.0;
@@ -879,8 +959,8 @@ export class LSTMModel implements Tunable {
   setAggression(level: AggressionLevel): void {
     this.aggressiveness = aggressionToProfile(level);
     this.learningRate = 0.002 + this.aggressiveness * 0.006;
-    const _h = Math.round(8 + this.aggressiveness * 8);
-    const _s = Math.round(8 + this.aggressiveness * 8);
+    const _h = Math.round(10 + this.aggressiveness * 8);
+    const _s = Math.round(10 + this.aggressiveness * 6);
     const spread = 0.05 + (1 - this.aggressiveness) * 0.03;
     this.buyThreshold = 0.5 + spread;
     this.sellThreshold = 0.5 - spread;
@@ -906,13 +986,20 @@ export class LSTMModel implements Tunable {
     const Wout = new Float64Array(h);
     const scaleOut = Math.sqrt(1 / h);
     for (let i = 0; i < Wout.length; i++) Wout[i] = randomGaussian() * scaleOut;
+    // Layer Norm: gamma=1, beta=0 (standard init)
+    this.lnGamma = new Float64Array(h);
+    this.lnBeta = new Float64Array(h);
+    for (let i = 0; i < h; i++) this.lnGamma[i] = 1.0;
     this.params = { W, U, b, Wout, bout: 0 };
     this.adam = {
       mW: new Float64Array(W.length), vW: new Float64Array(W.length),
       mU: new Float64Array(U.length), vU: new Float64Array(U.length),
       mb: new Float64Array(b.length), vb: new Float64Array(b.length),
       mWout: new Float64Array(Wout.length), vWout: new Float64Array(Wout.length),
-      mbout: 0, vbout: 0, t: 0,
+      mbout: 0, vbout: 0,
+      mLnGamma: new Float64Array(h), vLnGamma: new Float64Array(h),
+      mLnBeta: new Float64Array(h), vLnBeta: new Float64Array(h),
+      t: 0,
     };
     this.initializationDone = true;
   }
@@ -947,8 +1034,55 @@ export class LSTMModel implements Tunable {
     return hh;
   }
 
-  /** Forward completo sobre una secuencia */
-  private forward(seq: number[][]): { output: number; hStates: number[][] } {
+  /** Layer Norm: y = gamma * (x - mean) / sqrt(var + eps) + beta */
+  private layerNormForward(x: Float64Array): { y: Float64Array; mean: number; invStd: number } {
+    const n = x.length;
+    const eps = 1e-5;
+    let mean = 0;
+    for (let i = 0; i < n; i++) mean += x[i];
+    mean /= n;
+    let variance = 0;
+    for (let i = 0; i < n; i++) variance += (x[i] - mean) * (x[i] - mean);
+    variance /= n;
+    const invStd = 1 / Math.sqrt(variance + eps);
+    const y = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      y[i] = this.lnGamma[i] * (x[i] - mean) * invStd + this.lnBeta[i];
+    }
+    return { y, mean, invStd };
+  }
+
+  /** Backward through layer norm */
+  private layerNormBackward(dh: Float64Array, hRaw: Float64Array, invStd: number): { dhRaw: Float64Array; dGamma: Float64Array; dBeta: Float64Array } {
+    const n = dh.length;
+    const eps = 1e-5;
+    const variance = 1 / (invStd * invStd) - eps;
+    let mean = 0;
+    for (let i = 0; i < n; i++) mean += hRaw[i];
+    mean /= n;
+    const dxHat = new Float64Array(n);
+    const dGamma = new Float64Array(n);
+    const dBeta = new Float64Array(n);
+    let dVar = 0;
+    let dMean = 0;
+    for (let i = 0; i < n; i++) {
+      const xhat = (hRaw[i] - mean) * invStd;
+      dxHat[i] = dh[i] * this.lnGamma[i];
+      dGamma[i] = dh[i] * xhat;
+      dBeta[i] = dh[i];
+      dVar += dxHat[i] * (hRaw[i] - mean) * (-0.5) * Math.pow(variance + eps, -1.5);
+      dMean += dxHat[i] * (-invStd);
+    }
+    dMean += dVar * (-2 / n) * Array.from(hRaw).reduce((s, v) => s + (v - mean), 0);
+    const dhRaw = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      dhRaw[i] = dxHat[i] * invStd + dVar * 2 * (hRaw[i] - mean) / n + dMean / n;
+    }
+    return { dhRaw, dGamma, dBeta };
+  }
+
+  /** Forward completo sobre una secuencia con Layer Norm en la salida */
+  private forward(seq: number[][]): { output: number; hStates: number[][]; lnMean: number; lnInvStd: number } {
     const p = this.params;
     const h = this.hiddenSize;
     let hPrev: number[] = new Array(h).fill(0);
@@ -958,14 +1092,15 @@ export class LSTMModel implements Tunable {
       hStates.push(Array.from(hh));
       hPrev = Array.from(hh);
     }
-    const lastH = hStates[hStates.length - 1];
+    const rawLastH = new Float64Array(hStates[hStates.length - 1]);
+    const { y: lastH, mean, invStd } = this.layerNormForward(rawLastH);
     let logit = p.bout;
     for (let j = 0; j < h; j++) logit += p.Wout[j] * lastH[j];
-    return { output: sigmoid(logit), hStates };
+    return { output: sigmoid(logit), hStates, lnMean: mean, lnInvStd: invStd };
   }
 
-  /** BPTT simplificado para RNN tanh con Adam optimizer */
-  private bptt(seq: number[][], target: number, hStates: number[][]): number {
+  /** BPTT simplificado para RNN tanh con Layer Norm + Adam optimizer */
+  private bptt(seq: number[][], target: number, hStates: number[][], _lnMean: number, lnInvStd: number): number {
     const p = this.params;
     const a = this.adam!;
     const h = this.hiddenSize;
@@ -973,21 +1108,42 @@ export class LSTMModel implements Tunable {
     const T = hStates.length;
     const steps = Math.min(7, T);
 
-    const lastH = hStates[T - 1];
+    const rawLastH = new Float64Array(hStates[T - 1]);
+    const { y: lastH } = this.layerNormForward(rawLastH);
     let logit = p.bout;
     for (let j = 0; j < h; j++) logit += p.Wout[j] * lastH[j];
     const outProb = sigmoid(logit);
     const dLogit = outProb - target;
 
-    const gradW = new Float64Array(h * xSize);
-    const gradU = new Float64Array(h * h);
-    const gradB = new Float64Array(h);
+    // Gradient through output layer
     const gradWout = new Float64Array(h);
     for (let j = 0; j < h; j++) gradWout[j] = dLogit * lastH[j];
     let gradBout = dLogit;
 
+    // Gradient into layer norm: dh_norm[j] = dLogit * Wout[j]
+    const dhNorm = new Float64Array(h);
+    for (let j = 0; j < h; j++) dhNorm[j] = dLogit * p.Wout[j];
+
+    // Backprop through layer norm to get gradient w.r.t. raw hidden state
+    const { dhRaw: dhAfterLN, dGamma, dBeta } = this.layerNormBackward(dhNorm, rawLastH, lnInvStd);
+
+    const gradW = new Float64Array(h * xSize);
+    const gradU = new Float64Array(h * h);
+    const gradB = new Float64Array(h);
+
+    // Init dhNext from layer-norm backpropagated gradient (only affects last timestep)
     let dhNext = new Float64Array(h);
-    for (let j = 0; j < h; j++) dhNext[j] = dLogit * p.Wout[j];
+    for (let j = 0; j < h; j++) {
+      dhNext[j] = dhAfterLN[j] * (1 - rawLastH[j] * rawLastH[j]);
+    }
+
+    // Accumulate LN grads for timesteps that don't get full BPTT
+    const gradLnGamma = new Float64Array(h);
+    const gradLnBeta = new Float64Array(h);
+    for (let j = 0; j < h; j++) {
+      gradLnGamma[j] += dGamma[j];
+      gradLnBeta[j] += dBeta[j];
+    }
 
     for (let t = T - 1; t >= Math.max(0, T - steps); t--) {
       const hState = hStates[t];
@@ -1017,6 +1173,7 @@ export class LSTMModel implements Tunable {
     for (let i = 0; i < gradU.length; i++) gNorm += gradU[i] * gradU[i];
     for (let i = 0; i < gradB.length; i++) gNorm += gradB[i] * gradB[i];
     for (let i = 0; i < gradWout.length; i++) gNorm += gradWout[i] * gradWout[i];
+    for (let i = 0; i < h; i++) { gNorm += gradLnGamma[i] * gradLnGamma[i]; gNorm += gradLnBeta[i] * gradLnBeta[i]; }
     gNorm += gradBout * gradBout;
     gNorm = Math.sqrt(gNorm);
     this.gradNormEMA = 0.95 * this.gradNormEMA + 0.05 * gNorm;
@@ -1027,6 +1184,7 @@ export class LSTMModel implements Tunable {
       for (let i = 0; i < gradU.length; i++) gradU[i] *= gScale;
       for (let i = 0; i < gradB.length; i++) gradB[i] *= gScale;
       for (let i = 0; i < gradWout.length; i++) gradWout[i] *= gScale;
+      for (let i = 0; i < h; i++) { gradLnGamma[i] *= gScale; gradLnBeta[i] *= gScale; }
       gradBout *= gScale;
     }
 
@@ -1039,26 +1197,20 @@ export class LSTMModel implements Tunable {
     const bc1 = 1 - Math.pow(b1, a.t);
     const bc2 = 1 - Math.pow(b2, a.t);
 
-    for (let i = 0; i < p.W.length; i++) {
-      a.mW[i] = b1 * a.mW[i] + (1 - b1) * gradW[i];
-      a.vW[i] = b2 * a.vW[i] + (1 - b2) * gradW[i] * gradW[i];
-      p.W[i] -= lr * (a.mW[i] / bc1) / (Math.sqrt(a.vW[i] / bc2) + eps);
-    }
-    for (let i = 0; i < p.U.length; i++) {
-      a.mU[i] = b1 * a.mU[i] + (1 - b1) * gradU[i];
-      a.vU[i] = b2 * a.vU[i] + (1 - b2) * gradU[i] * gradU[i];
-      p.U[i] -= lr * (a.mU[i] / bc1) / (Math.sqrt(a.vU[i] / bc2) + eps);
-    }
-    for (let i = 0; i < p.b.length; i++) {
-      a.mb[i] = b1 * a.mb[i] + (1 - b1) * gradB[i];
-      a.vb[i] = b2 * a.vb[i] + (1 - b2) * gradB[i] * gradB[i];
-      p.b[i] -= lr * (a.mb[i] / bc1) / (Math.sqrt(a.vb[i] / bc2) + eps);
-    }
-    for (let i = 0; i < p.Wout.length; i++) {
-      a.mWout[i] = b1 * a.mWout[i] + (1 - b1) * gradWout[i];
-      a.vWout[i] = b2 * a.vWout[i] + (1 - b2) * gradWout[i] * gradWout[i];
-      p.Wout[i] -= lr * (a.mWout[i] / bc1) / (Math.sqrt(a.vWout[i] / bc2) + eps);
-    }
+    const adamUpdate = (grad: Float64Array, m: Float64Array, v: Float64Array, param: Float64Array) => {
+      for (let i = 0; i < param.length; i++) {
+        m[i] = b1 * m[i] + (1 - b1) * grad[i];
+        v[i] = b2 * v[i] + (1 - b2) * grad[i] * grad[i];
+        param[i] -= lr * (m[i] / bc1) / (Math.sqrt(v[i] / bc2) + eps);
+      }
+    };
+
+    adamUpdate(gradW, a.mW, a.vW, p.W);
+    adamUpdate(gradU, a.mU, a.vU, p.U);
+    adamUpdate(gradB, a.mb, a.vb, p.b);
+    adamUpdate(gradWout, a.mWout, a.vWout, p.Wout);
+    adamUpdate(gradLnGamma, a.mLnGamma, a.vLnGamma, this.lnGamma);
+    adamUpdate(gradLnBeta, a.mLnBeta, a.vLnBeta, this.lnBeta);
     a.mbout = b1 * a.mbout + (1 - b1) * gradBout;
     a.vbout = b2 * a.vbout + (1 - b2) * gradBout * gradBout;
     p.bout -= lr * (a.mbout / bc1) / (Math.sqrt(a.vbout / bc2) + eps);
@@ -1079,7 +1231,7 @@ export class LSTMModel implements Tunable {
       const seq = sub.slice(start, start + this.seqLength);
       const target = y[start + this.seqLength];
       const fwd = this.forward(seq);
-      totalLoss += this.bptt(seq, target, fwd.hStates);
+      totalLoss += this.bptt(seq, target, fwd.hStates, fwd.lnMean, fwd.lnInvStd);
       this.trainingSteps++;
     }
     this.samples += nSteps;
