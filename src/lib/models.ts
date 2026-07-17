@@ -829,8 +829,8 @@ export class RandomForestModel implements Tunable {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 5. LSTMModel — RNN simple con Leaky ReLU (más rápida que LSTM completo).
-// Backprop truncado (BPTT-7) con gradient clipping y momentum SGD.
+// 5. LSTMModel — RNN simple con tanh y BPTT-7.
+// Gradient clipping + momentum SGD para estabilidad.
 // ════════════════════════════════════════════════════════════════════════════
 
 interface RnnParams {
@@ -912,7 +912,7 @@ export class LSTMModel implements Tunable {
     ];
   }
 
-  /** Forward de la celda RNN un paso: h_t = leaky_relu(W*x_t + U*h_{t-1} + b) */
+  /** Forward de la celda RNN un paso: h_t = tanh(W*x_t + U*h_{t-1} + b) */
   private forwardCell(x: number[], hPrev: number[] | Float64Array): Float64Array {
     const h = this.hiddenSize;
     const p = this.params;
@@ -921,7 +921,7 @@ export class LSTMModel implements Tunable {
       let s = p.b[j];
       for (let k = 0; k < this.inputSize; k++) s += p.W[j * this.inputSize + k] * x[k];
       for (let k = 0; k < h; k++) s += p.U[j * h + k] * hPrev[k];
-      hh[j] = s > 0 ? s : 0.01 * s;
+      hh[j] = Math.tanh(s);
     }
     return hh;
   }
@@ -943,7 +943,7 @@ export class LSTMModel implements Tunable {
     return { output: sigmoid(logit), hStates };
   }
 
-  /** BPTT simplificado para RNN Leaky ReLU */
+  /** BPTT simplificado para RNN tanh */
   private bptt(seq: number[][], target: number, hStates: number[][]): number {
     const p = this.params;
     const h = this.hiddenSize;
@@ -972,9 +972,9 @@ export class LSTMModel implements Tunable {
       const hPrev = t > 0 ? hStates[t - 1] : new Array(h).fill(0);
       const x = seq[t];
 
-      // dh_t = dh_next * leaky_relu'(h_t)
+      // dh_t = dh_next * tanh'(h_t) = dh_next * (1 - tanh^2(h_t))
       const dh = new Float64Array(h);
-      for (let j = 0; j < h; j++) dh[j] = dhNext[j] * (hState[j] > 0 ? 1 : 0.01);
+      for (let j = 0; j < h; j++) dh[j] = dhNext[j] * (1 - hState[j] * hState[j]);
 
       for (let j = 0; j < h; j++) {
         gradB[j] += dh[j];
