@@ -35,10 +35,9 @@ export function useTradingSim() {
     engineRef.current?.setAggression(id, level);
   }, []);
 
-  const reset = useCallback(() => {
-    engineRef.current?.stop();
-    startEngine();
-  }, [startEngine]);
+  const reset = useCallback(async () => {
+    await engineRef.current?.reset();
+  }, []);
 
   return { snap, toggleRunning, setAggression, reset };
 }

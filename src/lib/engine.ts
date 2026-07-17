@@ -493,6 +493,59 @@ export class TradingEngine {
     this.timer = null;
   }
 
+  /** Reset completo: limpia todo el estado y relanza desde cero */
+  async reset(): Promise<void> {
+    this.stop();
+    await new Promise((r) => setTimeout(r, 50));
+
+    // 1. Recrear cuentas
+    this.accounts = {
+      rl: new MarginAccount("rl"),
+      xgb: new MarginAccount("xgb"),
+      stat: new MarginAccount("stat"),
+      rf: new MarginAccount("rf"),
+      lstm: new MarginAccount("lstm"),
+    };
+
+    // 2. Recrear modelos
+    this.rlAgent = new QLearningAgent();
+    this.xgbModel = new GradientBoostingModel();
+    this.statModel = new StatisticalModel();
+    this.rfModel = new RandomForestModel();
+    this.lstmModel = new LSTMModel();
+    this.modelLookup = {
+      rl: this.rlAgent,
+      xgb: this.xgbModel,
+      stat: this.statModel,
+      rf: this.rfModel,
+      lstm: this.lstmModel,
+    };
+    MODEL_IDS.forEach((id) => this.modelLookup[id].setAggression(this.aggressionPerModel[id]));
+
+    // 3. Limpiar historial
+    this.closes = [];
+    this.times = [];
+    this.minuteCloses = [];
+    this.minuteTimes = [];
+    this.features = null;
+    this.featuresMatrix = [];
+    this.equitySeries = [];
+    this.trades = [];
+    this.ticks = 0;
+    this.running = true;
+    this.bhBtc = 0;
+    this.bhInterest = 0;
+    this.lastSignals = { rl: "hold", xgb: "hold", stat: "hold", rf: "hold", lstm: "hold" };
+    this.lastProbabilities = { rl: 0.5, xgb: 0.5, stat: 0.5, rf: 0.5, lstm: 0.5 };
+    this.lastStatOutcome = undefined;
+
+    this.aborted = false;
+    this.market = { price: 0, change24h: 0, high24h: 0, low24h: 0, volume24h: 0, source: "—", lastUpdate: 0 };
+
+    // 4. Relanzar todo el pipeline
+    await this.start();
+  }
+
   toggleRunning(): void {
     this.running = !this.running;
     this.emit();
