@@ -1,0 +1,91 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 47% 5%;
+    --foreground: 213 31% 91%;
+    --card: 222 40% 8%;
+    --card-foreground: 213 31% 91%;
+    --popover: 222 40% 8%;
+    --popover-foreground: 213 31% 91%;
+    --primary: 160 84% 39%;
+    --primary-foreground: 222 47% 5%;
+    --secondary: 220 26% 14%;
+    --secondary-foreground: 213 31% 91%;
+    --muted: 220 26% 14%;
+    --muted-foreground: 215 16% 57%;
+    --accent: 220 26% 16%;
+    --accent-foreground: 213 31% 91%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 220 22% 16%;
+    --input: 220 22% 16%;
+    --ring: 160 84% 39%;
+    --radius: 0.75rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "tnum" 1, "cv03" 1;
+  }
+}
+
+/* Fondo con malla y resplandor */
+.arena-bg {
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(16, 185, 129, 0.09), transparent),
+    radial-gradient(ellipse 60% 40% at 85% 10%, rgba(139, 92, 246, 0.07), transparent),
+    radial-gradient(ellipse 50% 40% at 10% 90%, rgba(245, 158, 11, 0.05), transparent),
+    hsl(var(--background));
+}
+
+.glass-card {
+  background: linear-gradient(160deg, hsl(222 40% 9% / 0.9), hsl(222 44% 6.5% / 0.95));
+  border: 1px solid hsl(220 22% 16% / 0.9);
+  box-shadow: 0 1px 0 0 hsl(0 0% 100% / 0.04) inset, 0 12px 32px -16px hsl(222 60% 2% / 0.8);
+}
+
+.tick-flash-up {
+  animation: flashUp 0.6s ease-out;
+}
+.tick-flash-down {
+  animation: flashDown 0.6s ease-out;
+}
+@keyframes flashUp {
+  0% { color: #34d399; }
+  100% { color: inherit; }
+}
+@keyframes flashDown {
+  0% { color: #f87171; }
+  100% { color: inherit; }
+}
+
+.pulse-dot {
+  animation: pulseDot 2s ease-in-out infinite;
+}
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5); }
+  50% { opacity: 0.75; box-shadow: 0 0 0 6px rgba(52, 211, 153, 0); }
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(220 22% 22%);
+  border-radius: 4px;
+}
