@@ -5,7 +5,7 @@
 import express from "express";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
-import { existsSync, mkdirSync, writeFileSync, readFileSync, appendFileSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import {
@@ -40,7 +40,25 @@ function logTrade(trade: EngineSnapshot["trades"][number]): void {
   ensureDataDir();
   logHeader();
   const line = `${new Date(trade.ts).toISOString()},${trade.agent},${trade.side},${trade.price},${trade.qty},${trade.value},${trade.fee},"${trade.reason.replace(/"/g, "'")}"\n`;
-  appendFileSync(LOG_FILE, line);
+  try {
+    // Use non-blocking write by pushing to a buffer
+    tradeBuffer += line;
+  } catch {
+    // silently ignore log errors
+  }
+}
+
+let tradeBuffer = "";
+function flushTrades(): void {
+  if (!tradeBuffer) return;
+  try {
+    ensureDataDir();
+    logHeader();
+    writeFileSync(LOG_FILE, tradeBuffer, { flag: "a" });
+    tradeBuffer = "";
+  } catch (err) {
+    console.error("Failed to flush trade log:", err);
+  }
 }
 
 function loadState(): PersistedEngineState | null {
@@ -57,7 +75,9 @@ function saveState(engine: TradingEngine): void {
   ensureDataDir();
   try {
     const state = engine.exportState();
-    writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+    const tmp = STATE_FILE + ".tmp";
+    writeFileSync(tmp, JSON.stringify(state, null, 2));
+    renameSync(tmp, STATE_FILE);
   } catch (err) {
     console.error("Failed to save engine state:", err);
   }
@@ -154,18 +174,26 @@ wss.on("connection", (ws) => {
 
 let lastLoggedTradeTs = 0;
 function broadcast(): void {
-  const snap = engine.snapshot();
-  const msg = JSON.stringify({ type: "snapshot", data: snap });
-  for (const ws of clients) {
-    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
-  }
-  // Log new trades
-  for (let i = 0; i < snap.trades.length; i++) {
-    const t = snap.trades[i];
-    if (t.ts > lastLoggedTradeTs) {
-      logTrade(t);
-      if (i === 0) lastLoggedTradeTs = t.ts;
+  try {
+    const snap = engine.snapshot();
+    const msg = JSON.stringify({ type: "snapshot", data: snap });
+    for (const ws of clients) {
+      try {
+        if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+      } catch {
+        clients.delete(ws);
+      }
     }
+    // Log new trades
+    for (let i = 0; i < snap.trades.length; i++) {
+      const t = snap.trades[i];
+      if (t.ts > lastLoggedTradeTs) {
+        logTrade(t);
+        if (i === 0) lastLoggedTradeTs = t.ts;
+      }
+    }
+  } catch (err) {
+    console.error("Broadcast error:", err);
   }
 }
 
@@ -185,6 +213,7 @@ async function main(): Promise<void> {
 
   setInterval(broadcast, BROADCAST_MS);
   setInterval(() => saveState(engine), 30_000);
+  setInterval(flushTrades, 15_000);
 
   server.listen(PORT, () => {
     console.log(`BTC Arena server listening on http://localhost:${PORT}`);

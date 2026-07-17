@@ -66,18 +66,22 @@ export class RiskManager {
     return sum / period;
   }
 
-  /** Volatility-adjusted position size in USD (notional) */
+  /** Volatility-adjusted position size in USD (notional). Capped at maxNotional if provided. */
   positionSize(
     equity: number,
     price: number,
     atr: number,
     confidence: number,
-    modelVolatility: number
+    modelVolatility: number,
+    maxNotional?: number
   ): number {
     if (atr <= 0 || price <= 0) return 0;
     const riskAmount = equity * this.profile.riskPerTrade;
     const stopDistance = atr * this.profile.stopLossAtr;
-    const notional = riskAmount / (stopDistance / price);
+    const notional = Math.min(
+      riskAmount / (stopDistance / price),
+      maxNotional ?? Infinity
+    );
 
     // Scale by model confidence
     const confidenceAdj = clamp(confidence, 0.2, 1);

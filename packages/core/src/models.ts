@@ -629,7 +629,7 @@ export class GradientBoostingModel implements Tunable {
 
   /** Entrena 3 sub-modelos para horizontes 1, 5 y 15 barras. `returns` debe estar alineado con X. */
   train(X: number[][], returns: number[]): void {
-    if (X.length < 30 || returns.length < X.length + 15) {
+    if (X.length < 30 || returns.length < X.length + 1) {
       this.lastTrainAt = new Date().toLocaleTimeString("es-ES");
       return;
     }
@@ -702,7 +702,7 @@ export class GradientBoostingModel implements Tunable {
   }
 
   retrainIncremental(X: number[][], returns: number[], extraTrees = 8): void {
-    if (X.length < 30 || returns.length < X.length + 15 || this.totalTreeCount() === 0) {
+    if (X.length < 30 || returns.length < X.length + 1 || this.totalTreeCount() === 0) {
       this.train(X, returns);
       return;
     }

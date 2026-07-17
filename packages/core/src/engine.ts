@@ -459,6 +459,7 @@ export class TradingEngine {
   private busy = false;
   private aborted = false;
   private startGeneration = 0;
+  private modelsLoaded = false;
 
   constructor() {
     MODEL_IDS.forEach((id) => this.modelLookup[id].setAggression(this.aggressionPerModel[id]));
@@ -618,7 +619,7 @@ export class TradingEngine {
   }
 
   private trainInitialModels(upTo: number): void {
-    if (!this.features) return;
+    if (!this.features || this.modelsLoaded) return;
     const X: number[][] = [];
     const rets: number[] = [];
     const from = Math.max(WARMUP, upTo - 400);
@@ -692,12 +693,15 @@ export class TradingEngine {
     const concentration = this.riskManager.concentrationAdjustment(this.alignedCount());
     const equity = acc.net(price);
     const vol = this.features!.at(this.minuteCloses.length - 1)[4];
-    const notional = this.riskManager.positionSize(equity, price, atr, confidence, vol) * concentration;
+    const maxNotional = direction === "long" ? acc.cash * 0.95 : acc.btc * price * 0.95;
+    const notional = this.riskManager.positionSize(equity, price, atr, confidence, vol, maxNotional) * concentration;
     const qty = notional / price;
     if (qty * price < 20) return;
 
     const slipPrice = this.riskManager.applySlippage(price, direction === "long" ? "buy" : "sell");
-    const tr = acc.buy(slipPrice, qty, ts, `${reason} · ${direction.toUpperCase()}`);
+    const tr = direction === "long"
+      ? acc.buy(slipPrice, qty, ts, `${reason} · ${direction.toUpperCase()}`)
+      : acc.sell(slipPrice, qty, ts, `${reason} · ${direction.toUpperCase()}`);
     if (!tr) return;
     this.pushTrade(tr);
 
@@ -842,7 +846,7 @@ export class TradingEngine {
   }
 
   private canSell(acc: MarginAccount, price: number): boolean {
-    return acc.exposure(price) > 0.15;
+    return acc.exposure(price) > 0.02;
   }
 
   private pushTrade(tr: Trade): void {
@@ -1006,7 +1010,7 @@ export class TradingEngine {
     return {
       aggressionPerModel: { ...this.aggressionPerModel },
       models: {
-        rl: {},
+        rl: this.rlAgent.toJSON(),
         xgb: this.xgbModel.toJSON(),
         stat: this.statModel.toJSON(),
         rf: this.rfModel.toJSON(),
@@ -1018,13 +1022,17 @@ export class TradingEngine {
   importState(state: PersistedEngineState): void {
     if (state.aggressionPerModel) {
       this.aggressionPerModel = { ...state.aggressionPerModel };
-      MODEL_IDS.forEach((id) => this.modelLookup[id].setAggression(this.aggressionPerModel[id]));
     }
     try {
+      const hasModels =
+        state.models?.xgb || state.models?.rf || state.models?.gru || state.models?.stat;
       if (state.models?.xgb) this.xgbModel = GradientBoostingModel.fromJSON(state.models.xgb);
       if (state.models?.rf) this.rfModel = RandomForestModel.fromJSON(state.models.rf);
       if (state.models?.gru) this.gruModel = GRUModel.fromJSON(state.models.gru);
       if (state.models?.stat) this.statModel = StatisticalModel.fromJSON(state.models.stat);
+      if (state.models?.rl && Object.keys(state.models.rl as object).length > 0) {
+        this.rlAgent = QLearningAgent.fromJSON(state.models.rl);
+      }
       this.modelLookup = {
         rl: this.rlAgent,
         xgb: this.xgbModel,
@@ -1032,9 +1040,12 @@ export class TradingEngine {
         rf: this.rfModel,
         gru: this.gruModel,
       };
+      if (hasModels) this.modelsLoaded = true;
     } catch {
       // ignore corrupt state
     }
+    // Apply aggression after model restore so loaded thresholds take priority
+    MODEL_IDS.forEach((id) => this.modelLookup[id].setAggression(this.aggressionPerModel[id]));
   }
 
   get gruSeqLength(): number {
