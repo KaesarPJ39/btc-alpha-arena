@@ -341,6 +341,10 @@ export class TradingEngine {
 
   closes: number[] = [];
   times: number[] = [];
+  // Barras de 1 minuto usadas para features y entrenamiento (evita que live mode
+  // entrene/prediga sobre ticks de 3 segundos con distribución diferente).
+  minuteCloses: number[] = [];
+  minuteTimes: number[] = [];
   features: FeatureSet | null = null;
   featuresMatrix: number[][] = [];
   equitySeries: EquityPoint[] = [];
@@ -406,8 +410,10 @@ export class TradingEngine {
       if (this.aborted) return;
       this.closes = klines.map((k) => k.close);
       this.times = klines.map((k) => k.t);
-      this.features = buildFeatures(this.closes);
-      this.featuresMatrix = Array.from({ length: this.closes.length }, (_, i) => this.features!.at(i));
+      this.minuteCloses = [...this.closes];
+      this.minuteTimes = [...this.times];
+      this.features = buildFeatures(this.minuteCloses);
+      this.featuresMatrix = Array.from({ length: this.minuteCloses.length }, (_, i) => this.features!.at(i));
       this.market = { ...this.market, price: this.closes[this.closes.length - 1] };
 
       this.status = "backtest";
@@ -457,27 +463,31 @@ export class TradingEngine {
 
   private trainInitialModels(upTo: number): void {
     if (!this.features) return;
+    const horizon = 5;
     const X: number[][] = [];
     const y: number[] = [];
     const from = Math.max(WARMUP, upTo - 400);
     for (let i = from; i < upTo; i++) {
       X.push(this.features.at(i));
-      y.push(this.closes[i + 1] > this.closes[i] ? 1 : 0);
+      const nextIdx = Math.min(i + horizon, this.minuteCloses.length - 1);
+      y.push(this.minuteCloses[nextIdx] > this.minuteCloses[i] ? 1 : 0);
     }
     this.xgbModel.train(X, y);
     this.rfModel.train(X, y);
-    this.lstmModel.train(X, y, 30);
+    this.lstmModel.train(X, y, 80);
   }
 
   private retrainIncrementalModels(): void {
     if (!this.features) return;
-    const upTo = this.closes.length - 2;
+    const horizon = 5;
+    const upTo = this.minuteCloses.length - 2;
     const X: number[][] = [];
     const y: number[] = [];
     const from = Math.max(WARMUP, upTo - 400);
     for (let i = from; i < upTo; i++) {
       X.push(this.features.at(i));
-      y.push(this.closes[i + 1] > this.closes[i] ? 1 : 0);
+      const nextIdx = Math.min(i + horizon, this.minuteCloses.length - 1);
+      y.push(this.minuteCloses[nextIdx] > this.minuteCloses[i] ? 1 : 0);
     }
     this.xgbModel.retrainIncremental(X, y, 4);
     this.rfModel.addTrees(X, y, 6);
@@ -495,16 +505,16 @@ export class TradingEngine {
     };
   }
 
-  private step(i: number, dtSeconds: number, live: boolean): void {
-    if (!this.features || i >= this.closes.length) return;
-    const price = this.closes[i];
-    const ts = this.times[i] ?? Date.now();
+  private step(i: number, dtSeconds: number, live: boolean, priceOverride?: number, tsOverride?: number): void {
+    if (!this.features || i >= this.minuteCloses.length) return;
+    const price = priceOverride ?? this.closes[i];
+    const ts = tsOverride ?? (this.times[i] ?? Date.now());
     const f = this.features.at(i);
 
     MODEL_IDS.forEach((id) => this.accounts[id].accrueInterest(dtSeconds));
     this.bhInterest += (LOAN_PRINCIPAL + this.bhInterest) * LOAN_APR * (dtSeconds / YEAR_SECONDS);
 
-    const LIVE_COOLDOWN_MS = 30_000;
+    const COOLDOWN_MS = live ? 30_000 : 120_000;
     const featureSeq = live
       ? this.featuresMatrix.slice(-Math.max(12, this.lstmModel["seqLength"] + 1))
       : this.featuresMatrix.slice(Math.max(0, i - 15), i + 1);
@@ -512,12 +522,13 @@ export class TradingEngine {
     // ── XGB ──
     const probXgb = this.xgbModel.predictProba(f);
     this.lastProbabilities.xgb = probXgb;
-    if (!live || ts - this.accounts.xgb.lastTradeTs >= LIVE_COOLDOWN_MS) {
-      const sig = probXgb > this.xgbModel.buyThreshold ? "buy" : probXgb < this.xgbModel.sellThreshold ? "sell" : "hold";
-      this.lastSignals.xgb = sig;
-      const tr = sig === "buy"
+    const sigXgb = probXgb > this.xgbModel.buyThreshold ? "buy" : probXgb < this.xgbModel.sellThreshold ? "sell" : "hold";
+    const confirmedXgb = sigXgb === this.lastSignals.xgb || sigXgb === "hold";
+    this.lastSignals.xgb = sigXgb;
+    if (confirmedXgb && sigXgb !== "hold" && ts - this.accounts.xgb.lastTradeTs >= COOLDOWN_MS) {
+      const tr = sigXgb === "buy" && this.canBuy(this.accounts.xgb, price)
         ? this.accounts.xgb.buy(price, ts, `P(subida)=${(probXgb * 100).toFixed(1)}%`)
-        : sig === "sell"
+        : sigXgb === "sell" && this.canSell(this.accounts.xgb, price)
           ? this.accounts.xgb.sell(price, ts, `P(subida)=${(probXgb * 100).toFixed(1)}%`)
           : null;
       if (tr) this.pushTrade(tr);
@@ -530,16 +541,16 @@ export class TradingEngine {
     this.lastSignals.rl = actionRl === 2 ? "buy" : actionRl === 0 ? "sell" : "hold";
     this.lastProbabilities.rl = actionRl === 2 ? 0.6 : actionRl === 0 ? 0.4 : 0.5;
     let trRl: Trade | null = null;
-    if (!live || ts - this.accounts.rl.lastTradeTs >= LIVE_COOLDOWN_MS) {
-      trRl = actionRl === 2
+    if (!live || ts - this.accounts.rl.lastTradeTs >= COOLDOWN_MS) {
+      trRl = actionRl === 2 && this.canBuy(this.accounts.rl, price)
         ? this.accounts.rl.buy(price, ts, `Q-buy · ε=${this.rlAgent.epsilonValue.toFixed(3)}`)
-        : actionRl === 0
+        : actionRl === 0 && this.canSell(this.accounts.rl, price)
           ? this.accounts.rl.sell(price, ts, `Q-sell · ε=${this.rlAgent.epsilonValue.toFixed(3)}`)
           : null;
       if (trRl) this.pushTrade(trRl);
     }
-    const nextIdx = Math.min(i + 1, this.closes.length - 1);
-    const nextPrice = live ? price : this.closes[nextIdx];
+    const nextIdx = Math.min(i + 1, this.minuteCloses.length - 1);
+    const nextPrice = live ? price : this.minuteCloses[nextIdx];
     const eqAfterRl = this.accounts.rl.cash + this.accounts.rl.btc * nextPrice - this.accounts.rl.interest;
     const reward = ((eqAfterRl - eqBeforeRl) / LOAN_PRINCIPAL) * 1000;
     this.rlAgent.learn(sRl, actionRl, reward, this.rlState(nextIdx, this.accounts.rl, nextPrice));
@@ -548,10 +559,10 @@ export class TradingEngine {
     const statRes = this.statModel.predict(f);
     this.lastSignals.stat = statRes.signal;
     this.lastProbabilities.stat = statRes.probability;
-    if (!live || ts - this.accounts.stat.lastTradeTs >= LIVE_COOLDOWN_MS) {
-      const trStat = statRes.signal === "buy"
+    if (!live || ts - this.accounts.stat.lastTradeTs >= COOLDOWN_MS) {
+      const trStat = statRes.signal === "buy" && this.canBuy(this.accounts.stat, price)
         ? this.accounts.stat.buy(price, ts, `Stat:${statRes.signal} comp=${statRes.composite.toFixed(2)}`)
-        : statRes.signal === "sell"
+        : statRes.signal === "sell" && this.canSell(this.accounts.stat, price)
           ? this.accounts.stat.sell(price, ts, `Stat:${statRes.signal} comp=${statRes.composite.toFixed(2)}`)
           : null;
       if (trStat) this.pushTrade(trStat);
@@ -561,11 +572,12 @@ export class TradingEngine {
     const probRf = this.rfModel.predictProba(f);
     this.lastProbabilities.rf = probRf;
     const sigRf = this.rfModel.pickSignal(probRf);
+    const confirmedRf = sigRf === this.lastSignals.rf || sigRf === "hold";
     this.lastSignals.rf = sigRf;
-    if (!live || ts - this.accounts.rf.lastTradeTs >= LIVE_COOLDOWN_MS) {
-      const trRf = sigRf === "buy"
+    if (confirmedRf && sigRf !== "hold" && ts - this.accounts.rf.lastTradeTs >= COOLDOWN_MS) {
+      const trRf = sigRf === "buy" && this.canBuy(this.accounts.rf, price)
         ? this.accounts.rf.buy(price, ts, `RF prob=${(probRf * 100).toFixed(1)}%`)
-        : sigRf === "sell"
+        : sigRf === "sell" && this.canSell(this.accounts.rf, price)
           ? this.accounts.rf.sell(price, ts, `RF prob=${(probRf * 100).toFixed(1)}%`)
           : null;
       if (trRf) this.pushTrade(trRf);
@@ -576,17 +588,20 @@ export class TradingEngine {
     this.lastProbabilities.lstm = probLstm;
     const sigLstm = this.lstmModel.pickSignal(probLstm);
     this.lastSignals.lstm = sigLstm;
-    if (!live || ts - this.accounts.lstm.lastTradeTs >= LIVE_COOLDOWN_MS) {
-      const trLstm = sigLstm === "buy"
+    if (sigLstm !== "hold" && ts - this.accounts.lstm.lastTradeTs >= COOLDOWN_MS) {
+      const trLstm = sigLstm === "buy" && this.canBuy(this.accounts.lstm, price)
         ? this.accounts.lstm.buy(price, ts, `LSTM P=${(probLstm * 100).toFixed(1)}%`)
-        : sigLstm === "sell"
+        : sigLstm === "sell" && this.canSell(this.accounts.lstm, price)
           ? this.accounts.lstm.sell(price, ts, `LSTM P=${(probLstm * 100).toFixed(1)}%`)
           : null;
       if (trLstm) this.pushTrade(trLstm);
     }
 
-    MODEL_IDS.forEach((id) => this.accounts[id].record(price));
+    this.recordEquity(price, ts, live);
+  }
 
+  private recordEquity(price: number, ts: number, live: boolean): void {
+    MODEL_IDS.forEach((id) => this.accounts[id].record(price));
     const point: EquityPoint = {
       t: ts,
       rl: this.accounts.rl.net(price),
@@ -608,6 +623,14 @@ export class TradingEngine {
     }
   }
 
+  private canBuy(acc: MarginAccount, price: number): boolean {
+    return acc.exposure(price) < 0.85;
+  }
+
+  private canSell(acc: MarginAccount, price: number): boolean {
+    return acc.exposure(price) > 0.15;
+  }
+
   private pushTrade(tr: Trade): void {
     const last = this.trades[0];
     if (last && last.ts === tr.ts && last.agent === tr.agent && last.side === tr.side && Math.abs(last.qty - tr.qty) < 1e-9) return;
@@ -621,19 +644,38 @@ export class TradingEngine {
     try {
       this.market = await fetchSpotPrice();
       const price = this.market.price;
-      const lastT = this.times[this.times.length - 1] ?? 0;
-      const dt = Math.max(3, Math.min(30, (Date.now() - lastT) / 1000));
+      const now = Date.now();
+
+      // Actualizar serie de display cada 3 segundos
       this.closes.push(price);
-      this.times.push(Date.now());
+      this.times.push(now);
       if (this.closes.length > 2500) {
         this.closes.splice(0, 500);
         this.times.splice(0, 500);
       }
-      this.features = buildFeatures(this.closes);
-      this.featuresMatrix = Array.from({ length: this.closes.length }, (_, i) => this.features!.at(i));
-      this.ticks++;
-      this.step(this.closes.length - 1, dt, true);
-      if (this.ticks % RETRAIN_EVERY_TICKS === 0) this.retrainIncrementalModels();
+
+      // Solo generar una nueva barra de 1 minuto para features/modelos
+      const lastMinuteTs = this.minuteTimes[this.minuteTimes.length - 1] ?? 0;
+      const isNewMinute = this.minuteTimes.length === 0 || now - lastMinuteTs >= 60_000;
+
+      if (isNewMinute) {
+        this.minuteCloses.push(price);
+        this.minuteTimes.push(now);
+        if (this.minuteCloses.length > 2500) {
+          this.minuteCloses.splice(0, 500);
+          this.minuteTimes.splice(0, 500);
+        }
+        this.features = buildFeatures(this.minuteCloses);
+        this.featuresMatrix = Array.from({ length: this.minuteCloses.length }, (_, i) => this.features!.at(i));
+        this.ticks++;
+        const dt = Math.max(60, Math.min(300, (now - lastMinuteTs) / 1000));
+        this.step(this.minuteCloses.length - 1, dt, true, price, now);
+        if (this.ticks % RETRAIN_EVERY_TICKS === 0) this.retrainIncrementalModels();
+      } else {
+        // En ticks intermedios actualizar equity para el gráfico
+        this.recordEquity(price, now, true);
+      }
+
       this.emit();
     } catch {
       // mantén último estado
@@ -643,7 +685,7 @@ export class TradingEngine {
   }
 
   private metricsFor(acc: MarginAccount): AgentMetrics {
-    const price = this.market.price || this.closes[this.closes.length - 1] || 0;
+    const price = this.market.price || this.minuteCloses[this.minuteCloses.length - 1] || this.closes[this.closes.length - 1] || 0;
     const net = acc.net(price);
     const secsPerStep =
       this.equitySeries.length > 1

@@ -398,7 +398,7 @@ export class GradientBoostingModel implements Tunable {
     this.maxDepth = 2 + Math.round(this.aggressiveness * 2);
     this.learningRate = 0.05 + this.aggressiveness * 0.10;
     this.lambda = 1.5 - this.aggressiveness * 0.8;
-    const spread = 0.5 - this.aggressiveness * 0.12;
+    const spread = 0.07 + (1 - this.aggressiveness) * 0.05;
     this.buyThreshold = 0.5 + spread;
     this.sellThreshold = 0.5 - spread;
   }
@@ -573,26 +573,28 @@ export class StatisticalModel implements Tunable {
     const sd = Math.sqrt(variance) || 1e-6;
     const zRet = Math.abs(ret1) / sd;
 
-    // Prueba 2: T-test direccional sobre momentum5 (signo robusto)
-    const tMom5 = mom5 * 30; // amplifica puesto a [-1,1]
+    // Prueba 2: Momentum5 direccional
+    const mom5Thr = 0.12 + (1 - this.aggressiveness) * 0.08;
 
     // Prueba 3: Z de mean-reversion sobre RSI: |rsi - 50| en unidades de 14
     const rsiRaw = rsiNorm * 50 + 50;
     const zRSI = (50 - rsiRaw) / 14; // positivo = sobreventa (comprar), negativo = sobrecompra (vender)
+    const rsiThr = 0.8 + (1 - this.aggressiveness) * 0.4;
 
-    // Prueba 4: R² de tendencia usando slope EMA: ratio de cruces
+    // Prueba 4: Tendencia usando slope EMA: ratio de cruces
     const trendScore = ema21_50 * 1.5 + price_ema50 * 1.0;
+    const trendThr = 1.0 + (1 - this.aggressiveness) * 0.5;
 
     // Prueba 5: Independencia serie (racha): signo de mom5 vs mom15 concordancia
     const streakAlign = mom5 * mom15 > 0 ? Math.sign(mom5) : 0;
 
     // Compuesto: voto ponderado
     const votes =
-      (tMom5 > this.thresholds.zMomentum ? Math.sign(mom5) * 1 : 0) +
-      (Math.abs(zRSI) > 0.5 ? Math.sign(zRSI) * 1.2 : 0) +
-      (Math.abs(trendScore) > 1.5 ? Math.sign(trendScore) * 0.8 : 0) +
-      (streakAlign !== 0 ? streakAlign * 0.5 : 0) +
-      (zRet > this.thresholds.zMeanReversion ? -Math.sign(ret1) * 0.4 : 0);
+      (Math.abs(mom5) > mom5Thr ? Math.sign(mom5) * 0.7 : 0) +
+      (Math.abs(zRSI) > rsiThr ? Math.sign(zRSI) * 0.7 : 0) +
+      (Math.abs(trendScore) > trendThr ? Math.sign(trendScore) * 0.6 : 0) +
+      (streakAlign !== 0 ? streakAlign * 0.3 : 0) +
+      (zRet > this.thresholds.zMeanReversion ? -Math.sign(ret1) * 0.3 : 0);
 
     // Penalización por volatilidad: choppy -> no operar
     const volPenalty = clamp(
@@ -602,7 +604,7 @@ export class StatisticalModel implements Tunable {
     );
     const score = votes * volPenalty;
     this.lastScore = score;
-    const threshold = 1.2 - this.aggressiveness * 0.7;
+    const threshold = 0.45 + (1 - this.aggressiveness) * 0.25;
     let signal: "buy" | "sell" | "hold" = "hold";
     if (score > threshold) signal = "buy";
     else if (score < -threshold) signal = "sell";
@@ -660,7 +662,7 @@ export class RandomForestModel implements Tunable {
       2,
       Math.round(3 + this.aggressiveness * 3)
     );
-    const spread = 0.5 - this.aggressiveness * 0.14;
+    const spread = 0.07 + (1 - this.aggressiveness) * 0.05;
     this.thresholds.buy = 0.5 + spread;
     this.thresholds.sell = 0.5 - spread;
   }
@@ -790,23 +792,19 @@ export class RandomForestModel implements Tunable {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 5. LSTMModel — Red neuronal recurrente con células LSTM simplificadas.
-// Forward online: puertas forget/input/output con tanh. Backprop truncado
-// (BPTT-3) usando sigmoid en salida. Sentinel + mini-ráfago de entrenamiento.
+// 5. LSTMModel — RNN simple con tanh (mucho más rápido y estable que LSTM
+// completo para este tamaño de problema). Backprop truncado (BPTT-3).
 // ════════════════════════════════════════════════════════════════════════════
 
-interface LstmParams {
-  // Célula: pesos para x_t y h_{t-1} forman 4 puertas concatenadas
-  W: Float64Array; // [4*hidden][input]
-  U: Float64Array; // [4*hidden][hidden]
-  b: Float64Array; // [4*hidden]
-  // Salida: capa densa hidden -> 1 (logit)
+interface RnnParams {
+  W: Float64Array; // [hidden][input]
+  U: Float64Array; // [hidden][hidden]
+  b: Float64Array; // [hidden]
   Wout: Float64Array; // [hidden]
   bout: number;
 }
 
 function randomGaussian(): number {
-  // Box-Muller
   let u = 0;
   let v = 0;
   while (u === 0) u = Math.random();
@@ -818,10 +816,9 @@ export class LSTMModel implements Tunable {
   private hiddenSize = 8;
   private seqLength = 12;
   private inputSize = 6;
-  private params!: LstmParams;
+  private params!: RnnParams;
   private aggressiveness = 0.5;
   private learningRate = 0.05;
-  private lambda = 1e-3;
   private samples = 0;
   private lastProbability = 0.5;
   private lastConfidence = 0;
@@ -834,11 +831,10 @@ export class LSTMModel implements Tunable {
 
   setAggression(level: AggressionLevel): void {
     this.aggressiveness = aggressionToProfile(level);
-    this.learningRate = 0.02 + this.aggressiveness * 0.06;
-    this.lambda = 1e-2 - this.aggressiveness * 9e-3;
-    this.hiddenSize = Math.round(6 + this.aggressiveness * 8);
+    this.learningRate = 0.04 + this.aggressiveness * 0.12;
+    this.hiddenSize = Math.round(8 + this.aggressiveness * 8);
     this.seqLength = Math.round(8 + this.aggressiveness * 8);
-    const spread = 0.5 - this.aggressiveness * 0.12;
+    const spread = 0.05 + (1 - this.aggressiveness) * 0.03;
     this.buyThreshold = 0.5 + spread;
     this.sellThreshold = 0.5 - spread;
     this.initializationDone = false;
@@ -848,22 +844,21 @@ export class LSTMModel implements Tunable {
     if (this.initializationDone) return;
     this.inputSize = inputSize;
     const h = this.hiddenSize;
-    const W = new Float64Array(4 * h * inputSize);
-    const U = new Float64Array(4 * h * h);
-    const b = new Float64Array(4 * h);
-    const scaleW = Math.sqrt(2 / inputSize);
-    const scaleU = Math.sqrt(2 / h);
+    const W = new Float64Array(h * inputSize);
+    const U = new Float64Array(h * h);
+    const b = new Float64Array(h);
+    const scaleW = Math.sqrt(1 / inputSize);
+    const scaleU = Math.sqrt(1 / h);
     for (let i = 0; i < W.length; i++) W[i] = randomGaussian() * scaleW;
     for (let i = 0; i < U.length; i++) U[i] = randomGaussian() * scaleU;
     const Wout = new Float64Array(h);
-    for (let i = 0; i < Wout.length; i++) Wout[i] = randomGaussian() * 0.1;
+    for (let i = 0; i < Wout.length; i++) Wout[i] = randomGaussian() * 0.05;
     this.params = { W, U, b, Wout, bout: 0 };
     this.initializationDone = true;
   }
 
-  /** Selección de features para el LSTM: momentum, volatilidad, RSI, trend... */
+  /** Selección de 6 features clave para la RNN */
   private toSubInput(f: number[]): number[] {
-    // 6 features clave ya normalizadas
     return [
       f[0] ?? 0, // Retorno 1
       f[2] ?? 0, // RSI-14
@@ -874,183 +869,93 @@ export class LSTMModel implements Tunable {
     ];
   }
 
-  /** Forward de la célula LSTM 1 paso. Devuelve (gates, h, c) para backprop */
-  private forwardCell(
-    x: number[],
-    hPrev: number[] | Float64Array,
-    cPrev: number[] | Float64Array
-  ): {
-    gates: Float64Array; // [4h]
-    h: Float64Array;
-    c: Float64Array;
-    pre: Float64Array; // pre-activation (4h)
-    iVec: Float64Array;
-    fVec: Float64Array;
-    oVec: Float64Array;
-    gVec: Float64Array;
-  } {
+  /** Forward de la celda RNN un paso: h_t = tanh(W*x_t + U*h_{t-1} + b) */
+  private forwardCell(x: number[], hPrev: number[] | Float64Array): Float64Array {
     const h = this.hiddenSize;
     const p = this.params;
-    const pre = new Float64Array(4 * h);
-    for (let g = 0; g < 4 * h; g++) {
-      let s = p.b[g];
-      for (let j = 0; j < this.inputSize; j++) s += p.W[g * this.inputSize + j] * x[j];
-      for (let j = 0; j < h; j++) s += p.U[g * h + j] * hPrev[j];
-      pre[g] = s;
-    }
-    const iVec = new Float64Array(h);
-    const fVec = new Float64Array(h);
-    const oVec = new Float64Array(h);
-    const gVec = new Float64Array(h);
-    for (let j = 0; j < h; j++) {
-      iVec[j] = sigmoid(pre[j]);
-      fVec[j] = sigmoid(pre[h + j]);
-      oVec[j] = sigmoid(pre[2 * h + j]);
-      gVec[j] = Math.tanh(pre[3 * h + j]);
-    }
-    const c = new Float64Array(h);
     const hh = new Float64Array(h);
     for (let j = 0; j < h; j++) {
-      c[j] = fVec[j] * cPrev[j] + iVec[j] * gVec[j];
-      hh[j] = oVec[j] * Math.tanh(c[j]);
+      let s = p.b[j];
+      for (let k = 0; k < this.inputSize; k++) s += p.W[j * this.inputSize + k] * x[k];
+      for (let k = 0; k < h; k++) s += p.U[j * h + k] * hPrev[k];
+      hh[j] = Math.tanh(s);
     }
-    const gates = new Float64Array(4 * h);
-    gates.set(iVec, 0);
-    gates.set(fVec, h);
-    gates.set(oVec, 2 * h);
-    gates.set(gVec, 3 * h);
-    return { gates, h: hh, c, pre, iVec, fVec, oVec, gVec };
+    return hh;
   }
 
-  /** Forward completo sobre una secuencia. Devuelve predicción + estado intermedio. */
-  private forward(seq: number[][]): {
-    output: number;
-    logit: number;
-    hStates: number[][];
-    cStates: number[][];
-    cells: ReturnType<LSTMModel["forwardCell"]>[];
-  } {
+  /** Forward completo sobre una secuencia */
+  private forward(seq: number[][]): { output: number; hStates: number[][] } {
     const p = this.params;
     const h = this.hiddenSize;
     let hPrev: number[] = new Array(h).fill(0);
-    let cPrev: number[] = new Array(h).fill(0);
     const hStates: number[][] = [];
-    const cStates: number[][] = [];
-    const cells: ReturnType<LSTMModel["forwardCell"]>[] = [];
     for (const xt of seq) {
-      const cell = this.forwardCell(xt, hPrev, cPrev);
-      cells.push(cell);
-      hStates.push(Array.from(cell.h));
-      cStates.push(Array.from(cell.c));
-      hPrev = Array.from(cell.h);
-      cPrev = Array.from(cell.c);
+      const hh = this.forwardCell(xt, hPrev);
+      hStates.push(Array.from(hh));
+      hPrev = Array.from(hh);
     }
+    const lastH = hStates[hStates.length - 1];
     let logit = p.bout;
-    for (let j = 0; j < h; j++) logit += p.Wout[j] * hPrev[j];
-    return {
-      output: sigmoid(logit),
-      logit,
-      hStates,
-      cStates,
-      cells,
-    };
+    for (let j = 0; j < h; j++) logit += p.Wout[j] * lastH[j];
+    return { output: sigmoid(logit), hStates };
   }
 
-  /** Backprop truncated: actualiza pesos hacia atras T pasos. */
-  private bptt(
-    seq: number[][],
-    target: number,
-    cells: ReturnType<LSTMModel["forwardCell"]>[],
-    hStates: number[][]
-  ): number {
+  /** BPTT simplificado para RNN tanh */
+  private bptt(seq: number[][], target: number, hStates: number[][]): number {
     const p = this.params;
     const h = this.hiddenSize;
     const xSize = this.inputSize;
-    const gradW = new Float64Array(4 * h * xSize);
-    const gradU = new Float64Array(4 * h * h);
-    const gradB = new Float64Array(4 * h);
-    const gradWout = new Float64Array(h);
-    let gradBout = 0;
-    // Salida
-    const outProb = sigmoid(hStates[hStates.length - 1]
-      ? hStates[hStates.length - 1].reduce((a, _, j) => a + p.Wout[j] * hStates[hStates.length - 1][j], 0) + p.bout
-      : 0
-    );
-    // Gradiente de la loss logística
-    const lastH = hStates[hStates.length - 1];
+    const T = hStates.length;
+    const steps = Math.min(3, T);
+
+    const lastH = hStates[T - 1];
+    let logit = p.bout;
+    for (let j = 0; j < h; j++) logit += p.Wout[j] * lastH[j];
+    const outProb = sigmoid(logit);
     const dLogit = outProb - target;
+
+    const gradW = new Float64Array(h * xSize);
+    const gradU = new Float64Array(h * h);
+    const gradB = new Float64Array(h);
+    const gradWout = new Float64Array(h);
     for (let j = 0; j < h; j++) gradWout[j] = dLogit * lastH[j];
-    gradBout = dLogit;
-    // Inicializar dh de la última salida
+    const gradBout = dLogit;
+
     let dhNext = new Float64Array(h);
     for (let j = 0; j < h; j++) dhNext[j] = dLogit * p.Wout[j];
-    let dcNext = new Float64Array(h);
-    const T = cells.length;
-    const steps = Math.min(3, T); // truncado
+
     for (let t = T - 1; t >= Math.max(0, T - steps); t--) {
-      const cell = cells[t];
-      const c = cell.c;
-      const tanhc = c.map((v: number) => Math.tanh(v));
-      // dcNext at this point = gradient from t+1 + dh*o*(1-tanh²(c))
-      const dcNextArr = new Float64Array(dcNext);
-      const dx = new Float64Array(4 * h);
-      // Salida -> gates
-      const dh = dhNext;
+      const hState = hStates[t];
+      const hPrev = t > 0 ? hStates[t - 1] : new Array(h).fill(0);
+      const x = seq[t];
+
+      // dh_t = dh_next * (1 - tanh^2(h_t))
+      const dh = new Float64Array(h);
+      for (let j = 0; j < h; j++) dh[j] = dhNext[j] * (1 - hState[j] * hState[j]);
+
       for (let j = 0; j < h; j++) {
-        dx[2 * h + j] = dh[j] * tanhc[j] * cell.oVec[j] * (1 - cell.oVec[j]);
-        dcNext[j] += dh[j] * cell.oVec[j] * (1 - tanhc[j] * tanhc[j]);
+        gradB[j] += dh[j];
+        for (let k = 0; k < xSize; k++) gradW[j * xSize + k] += dh[j] * x[k];
+        for (let k = 0; k < h; k++) gradU[j * h + k] += dh[j] * hPrev[k];
       }
-      // Célula: c_t = f*c_prev + i*g
-      for (let j = 0; j < h; j++) {
-        const dc = dcNext[j];
-        dx[j] = dc * cell.gVec[j] * cell.iVec[j] * (1 - cell.iVec[j]);
-        dx[h + j] = dc * (t > 0 && cells[t - 1] ? cells[t - 1].c[j] : 0) * cell.fVec[j] * (1 - cell.fVec[j]);
-        dx[3 * h + j] = dc * cell.iVec[j] * (1 - cell.gVec[j] * cell.gVec[j]);
-        // Recurre a h_prev/h
-        if (t > 0) {
-          for (let k = 0; k < h; k++) {
-            void (p.U[(j + 0) * h + k] * dx[j]);
-            // simplificación: propaga Jac de h_{t-1}
-          }
-        }
-      }
-      // Acumular gradiente en parámetros
-      const xT = seq[t];
-      for (let g = 0; g < 4 * h; g++) {
-        gradB[g] += dx[g];
-        for (let j = 0; j < xSize; j++) gradW[g * xSize + j] += dx[g] * xT[j];
-        for (let j = 0; j < h; j++)
-          gradU[g * h + j] += dx[g] * (t > 0 ? hStates[t - 1][j] : 0);
-      }
-      // Propagar dh previo: dW y dU ya acumulados, dh_{t-1} = (recurrencia U)
-      // Construir dh_{prev} para siguiente iter
-      const dhPrev = new Float64Array(h);
+
+      // dh para paso anterior
+      dhNext = new Float64Array(h);
       for (let k = 0; k < h; k++) {
-        for (let g = 0; g < 4 * h; g++)
-          dhPrev[k] += p.U[g * h + k] * dx[g];
+        for (let j = 0; j < h; j++) dhNext[k] += dh[j] * p.U[j * h + k];
       }
-      dhNext = dhPrev;
-      dcNext = new Float64Array(h);
-      for (let j = 0; j < h; j++) dcNext[j] = dcNextArr[j] * cell.fVec[j];
-      void cell;
     }
-    // Actualizar parámetros (con L2 en W y U)
+
     const lr = this.learningRate;
-    const lam = this.lambda;
-    for (let i = 0; i < p.W.length; i++)
-      p.W[i] -= lr * (gradW[i] + lam * p.W[i]);
-    for (let i = 0; i < p.U.length; i++)
-      p.U[i] -= lr * (gradU[i] + lam * p.U[i]);
+    for (let i = 0; i < p.W.length; i++) p.W[i] -= lr * gradW[i];
+    for (let i = 0; i < p.U.length; i++) p.U[i] -= lr * gradU[i];
     for (let i = 0; i < p.b.length; i++) p.b[i] -= lr * gradB[i];
-    for (let i = 0; i < p.Wout.length; i++)
-      p.Wout[i] -= lr * (gradWout[i] + lam * p.Wout[i]);
+    for (let i = 0; i < p.Wout.length; i++) p.Wout[i] -= lr * gradWout[i];
     p.bout -= lr * gradBout;
-    // Loss
-    const loss = -(target * Math.log(outProb + 1e-9) + (1 - target) * Math.log(1 - outProb + 1e-9));
-    return loss;
+
+    return -(target * Math.log(outProb + 1e-9) + (1 - target) * Math.log(1 - outProb + 1e-9));
   }
 
-  /** Entrenar con un batch de secuencias para target up/down por siguiente barra */
   train(X: number[][], y: number[], nSteps = 60): void {
     if (X.length < this.seqLength + 5) {
       this.lastTrainAt = new Date().toLocaleTimeString("es-ES");
@@ -1060,15 +965,11 @@ export class LSTMModel implements Tunable {
     this.ensureParams(sub[0].length);
     let totalLoss = 0;
     for (let step = 0; step < nSteps; step++) {
-      const start = Math.floor(
-        Math.random() * (sub.length - this.seqLength - 1)
-      );
+      const start = Math.floor(Math.random() * (sub.length - this.seqLength - 1));
       const seq = sub.slice(start, start + this.seqLength);
       const target = y[start + this.seqLength];
       const fwd = this.forward(seq);
-      void fwd;
-      const loss = this.bptt(seq, target, fwd.cells, fwd.hStates);
-      totalLoss += loss;
+      totalLoss += this.bptt(seq, target, fwd.hStates);
       this.trainingSteps++;
     }
     this.samples += nSteps;
@@ -1077,12 +978,9 @@ export class LSTMModel implements Tunable {
     this.lastTrainAt = new Date().toLocaleTimeString("es-ES");
   }
 
-  /** Predicción online: usa las últimas features como secuencia */
   predict(lastFeatures: number[][]): number {
     if (lastFeatures.length < this.seqLength + 1 || !this.initializationDone) return 0.5;
-    const seq = lastFeatures
-      .slice(-this.seqLength)
-      .map((row) => this.toSubInput(row));
+    const seq = lastFeatures.slice(-this.seqLength).map((row) => this.toSubInput(row));
     const fwd = this.forward(seq);
     this.lastProbability = fwd.output;
     this.lastConfidence = Math.abs(fwd.output - 0.5) * 2;
@@ -1108,7 +1006,6 @@ export class LSTMModel implements Tunable {
         seqLength: this.seqLength,
         inputSize: this.inputSize,
         learningRate: this.learningRate,
-        lambda: this.lambda,
         trainingSteps: this.trainingSteps,
         aggressiveness: this.aggressiveness,
       },
