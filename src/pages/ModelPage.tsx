@@ -18,6 +18,7 @@ import { PriceChart } from "@/sections/PriceChart";
 import { TradesTable } from "@/sections/TradesTable";
 import { Tuner } from "@/sections/Tuner";
 import { ModelFocusPanel } from "@/sections/ModelFocusPanel";
+import { ModelExplanation } from "@/sections/ModelExplanation";
 import {
   MODELS,
   MODEL_IDS,
@@ -101,6 +102,7 @@ export function ModelPage({ snap, modelId, onTune }: Props) {
       </section>
 
       <RankingCard snap={snap} modelId={modelId} />
+      <ModelExplanation modelId={modelId} />
     </div>
   );
 }
