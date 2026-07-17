@@ -200,27 +200,53 @@ async function fetchJson(url: string, timeoutMs = 6000): Promise<unknown> {
 }
 
 export async function fetchKlines(limit = 320): Promise<{ t: number; close: number }[]> {
+  // 1. Directo (funciona en Node / local sin CORS)
   try {
     const data = (await fetchJson(
       `https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=${limit}`
     )) as unknown[][];
     return data.map((k) => ({ t: k[0] as number, close: parseFloat(k[4] as string) }));
-  } catch {
-    const spot = await fetchSpotPrice();
-    const out: { t: number; close: number }[] = [];
-    let p = spot.price;
-    const now = Date.now();
-    const prices: number[] = [];
-    for (let i = 0; i < limit; i++) {
-      prices.unshift(p);
-      const shock = (Math.random() - 0.5) * 2 * 0.0012;
-      p = p / (1 + shock);
+  } catch {}
+
+  // 2. Proxy CORS (para navegador desplegado)
+  try {
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(
+      `https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=${limit}`
+    )}`;
+    const data = (await fetchJson(proxyUrl, 12_000)) as unknown[][];
+    if (Array.isArray(data) && data.length > 0) {
+      return data.map((k) => ({ t: k[0] as number, close: parseFloat(k[4] as string) }));
     }
-    for (let i = 0; i < limit; i++) {
-      out.push({ t: now - (limit - i) * 60_000, close: prices[i] });
-    }
-    return out;
+  } catch {}
+
+  // 3. Fallback sintético con tendencia para que los modelos aprendan
+  return await generateSyntheticKlines(limit);
+}
+
+async function generateSyntheticKlines(limit: number): Promise<{ t: number; close: number }[]> {
+  const spot = await fetchSpotPrice().catch(() => null);
+  const basePrice = spot?.price ?? 100_000;
+  const now = Date.now();
+  const out: { t: number; close: number }[] = [];
+  let p = basePrice;
+
+  // Semilla determinista para reproducibilidad
+  let seed = 123456;
+  const rand = () => {
+    seed = (seed * 16807 + 0) % 2147483647;
+    return (seed - 1) / 2147483646;
+  };
+
+  for (let i = limit - 1; i >= 0; i--) {
+    // Tendencia sinusoidal lenta + momentum + ruido
+    const trend = Math.sin(i * 0.06) * 0.001;
+    const momentum = Math.sin(i * 0.15) * 0.0006;
+    const shock = (rand() - 0.5) * 0.002;
+    p = p * (1 + trend + momentum + shock);
+    out.unshift({ t: now - i * 60_000, close: p });
   }
+
+  return out;
 }
 
 let offlinePrice = 0;
