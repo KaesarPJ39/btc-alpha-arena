@@ -227,23 +227,33 @@ async function generateSyntheticKlines(limit: number): Promise<{ t: number; clos
   const spot = await fetchSpotPrice().catch(() => null);
   const basePrice = spot?.price ?? 100_000;
   const now = Date.now();
-  const out: { t: number; close: number }[] = [];
-  let p = basePrice;
 
-  // Semilla determinista para reproducibilidad
+  // Generar retornos con tendencia sinusoidal + ruido, luego reconstruir precios
+  // El precio final (índice más alto) será exactamente basePrice
+  const rets: number[] = [];
   let seed = 123456;
   const rand = () => {
     seed = (seed * 16807 + 0) % 2147483647;
     return (seed - 1) / 2147483646;
   };
 
-  for (let i = limit - 1; i >= 0; i--) {
-    // Tendencia sinusoidal lenta + momentum + ruido
+  for (let i = 0; i < limit; i++) {
     const trend = Math.sin(i * 0.06) * 0.001;
     const momentum = Math.sin(i * 0.15) * 0.0006;
     const shock = (rand() - 0.5) * 0.002;
-    p = p * (1 + trend + momentum + shock);
-    out.unshift({ t: now - i * 60_000, close: p });
+    rets.push(trend + momentum + shock);
+  }
+
+  // Calcular factor de normalización para que el último precio = basePrice
+  let cumProd = 1;
+  for (let i = 0; i < limit; i++) cumProd *= (1 + rets[i]);
+  const scale = basePrice / cumProd;
+
+  const out: { t: number; close: number }[] = [];
+  let p = scale;
+  for (let i = 0; i < limit; i++) {
+    p *= (1 + rets[i]);
+    out.push({ t: now - (limit - 1 - i) * 60_000, close: p });
   }
 
   return out;
@@ -549,9 +559,8 @@ export class TradingEngine {
     const probXgb = this.xgbModel.predictProba(f);
     this.lastProbabilities.xgb = probXgb;
     const sigXgb = probXgb > this.xgbModel.buyThreshold ? "buy" : probXgb < this.xgbModel.sellThreshold ? "sell" : "hold";
-    const confirmedXgb = sigXgb === this.lastSignals.xgb || sigXgb === "hold";
     this.lastSignals.xgb = sigXgb;
-    if (confirmedXgb && sigXgb !== "hold" && ts - this.accounts.xgb.lastTradeTs >= COOLDOWN_MS) {
+    if (sigXgb !== "hold" && ts - this.accounts.xgb.lastTradeTs >= COOLDOWN_MS) {
       const tr = sigXgb === "buy" && this.canBuy(this.accounts.xgb, price)
         ? this.accounts.xgb.buy(price, ts, `P(subida)=${(probXgb * 100).toFixed(1)}%`)
         : sigXgb === "sell" && this.canSell(this.accounts.xgb, price)
@@ -598,9 +607,8 @@ export class TradingEngine {
     const probRf = this.rfModel.predictProba(f);
     this.lastProbabilities.rf = probRf;
     const sigRf = this.rfModel.pickSignal(probRf);
-    const confirmedRf = sigRf === this.lastSignals.rf || sigRf === "hold";
     this.lastSignals.rf = sigRf;
-    if (confirmedRf && sigRf !== "hold" && ts - this.accounts.rf.lastTradeTs >= COOLDOWN_MS) {
+    if (sigRf !== "hold" && ts - this.accounts.rf.lastTradeTs >= COOLDOWN_MS) {
       const trRf = sigRf === "buy" && this.canBuy(this.accounts.rf, price)
         ? this.accounts.rf.buy(price, ts, `RF prob=${(probRf * 100).toFixed(1)}%`)
         : sigRf === "sell" && this.canSell(this.accounts.rf, price)
