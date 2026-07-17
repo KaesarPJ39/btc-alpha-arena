@@ -635,7 +635,7 @@ export class TradingEngine {
     const last = this.trades[0];
     if (last && last.ts === tr.ts && last.agent === tr.agent && last.side === tr.side && Math.abs(last.qty - tr.qty) < 1e-9) return;
     this.trades.unshift(tr);
-    if (this.trades.length > 100) this.trades.pop();
+    if (this.trades.length > 500) this.trades.pop();
   }
 
   private async liveTick(): Promise<void> {

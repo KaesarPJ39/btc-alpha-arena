@@ -41,7 +41,7 @@ export function Header({ market, status, statusDetail, running, onToggle }: Prop
               BTC Alpha Arena
             </h1>
             <p className="text-[11px] leading-tight text-muted-foreground">
-              Reinforcement Learning vs XGBoost · Trading en vivo
+              Q-Learning · XGBoost · Statistical · Random Forest · RNN · BTC/USD en vivo
             </p>
           </div>
         </div>

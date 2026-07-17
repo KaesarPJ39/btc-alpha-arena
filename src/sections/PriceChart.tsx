@@ -30,7 +30,7 @@ export function PriceChart({ data, trades }: Props) {
     // casar cada trade con la barra más cercana
     return trades
       .filter((tr) => tr.ts >= t0 && tr.ts <= t1 + 60_000)
-      .slice(0, 30)
+      .slice(0, 80)
       .map((tr) => {
         let bestT = tr.ts;
         let bestD = Infinity;
