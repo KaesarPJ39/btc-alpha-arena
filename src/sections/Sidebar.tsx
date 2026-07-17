@@ -9,7 +9,7 @@ const NAV = [
   { to: "/model/xgb", label: "XGBoost", icon: LineChart, hint: MODELS.xgb.description },
   { to: "/model/stat", label: "Statistical", icon: Sigma, hint: MODELS.stat.description },
   { to: "/model/rf", label: "Random Forest", icon: TreePine, hint: MODELS.rf.description },
-  { to: "/model/lstm", label: "LSTM", icon: Network, hint: MODELS.lstm.description },
+  { to: "/model/gru", label: "GRU", icon: Network, hint: MODELS.gru.description },
   { to: "/docs", label: "Documentación", icon: BookOpen, hint: "Cómo funciona cada modelo" },
 ] as const;
 

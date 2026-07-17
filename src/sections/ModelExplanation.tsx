@@ -77,18 +77,18 @@ const explanations: Record<
     tuner:
       "Cambia nEstimators (40–100 árboles), maxDepth (3–6), nFeatSample (2–6 features evaluadas por split) y los umbrales de compra/venta. Agresivo = más árboles profundos que pueden overfittear ligeramente a corto plazo; conservador = árboles más simples y generalistas.",
   },
-  lstm: {
+  gru: {
     icon: <Layers className="h-5 w-5" />,
     what:
-      "Red neuronal recurrente (RNN simple con activación tanh, no LSTM real) que procesa secuencias de 10–16 pasos de tiempo. Cada paso actualiza un estado oculto mediante una celda recurrente (tanh). La salida es una probabilidad logística P(subida) obtenida de una capa densa sobre el último estado oculto, con Layer Normalization aplicada.",
+      "Red neuronal recurrente con células GRU (Gated Recurrent Unit). En cada paso procesa un vector de 10 features técnicas y actualiza un estado oculto mediante dos puertas sigmoides: update gate (z) que decide qué parte del estado anterior conservar, y reset gate (r) que decide qué olvidar antes de calcular el nuevo candidato. La salida es una probabilidad logística P(subida) obtenida de una capa densa sobre el último estado oculto, con Layer Normalization en cada paso temporal.",
     train:
-      "Inicialización Xavier/Glorot para pesos W, U, Wout. Optimizador Adam (β1=0.9, β2=0.999). Entrenamiento por batches: 80 pasos de BPTT (truncated backpropagation through time), cada paso samplea una ventana aleatoria de la serie. Se entrena sobre las últimas ~400 barras transformadas en secuencias de features.",
+      "Inicialización Xavier/Glorot para matrices Wz, Wr, Wn, Uz, Ur, Un y Wout. Optimizador Adam (β1=0.9, β2=0.999) con weight decay 1e-5. Entrenamiento por batches: samplea una ventana aleatoria de la serie y aplica BPTT completo sobre toda la secuencia de 20 pasos. Dropout 0.2 sobre el estado oculto durante el entrenamiento. Se entrena sobre las últimas ~400 barras.",
     learn:
-      "BPTT con truncamiento a 7 pasos temporales: propaga el gradiente desde la salida hacia atrás a través de la capa LayerNorm y luego por la celda tanh. Usa gradient clipping dinámico: un EMA de la norma del gradiente ajusta el threshold de clipping en cada paso. Además se entrenan los parámetros de LayerNorm (γ, β) junto con los pesos.",
+      "BPTT completo propaga el gradiente desde la salida hacia atrás a través de todas las capas GRU y la LayerNorm por paso temporal. Usa gradient clipping dinámico: un EMA de la norma del gradiente ajusta el threshold de clipping. Además se entrenan los parámetros de LayerNorm (γ, β) junto con los pesos de las puertas.",
     retrain:
-      "Cada 50 ticks (≈50 min) se reentrena con 20 pasos de BPTT sobre los datos más recientes. A diferencia de los gradient boosting trees, aquí los pesos se actualizan directamente (no se añaden capas), por lo que el modelo 'olvida' gradualmente patrones antiguos y se adapta a nuevos.",
+      "Cada 50 ticks (≈50 min) se reentrena con 20 pasos de BPTT sobre los datos más recientes. Los pesos se actualizan directamente, por lo que el modelo adapta gradualmente su comportamiento a los nuevos patrones del mercado sin necesidad de añadir capas.",
     tuner:
-      "Cambia el tamaño del estado oculto (10–18 neuronas), la tasa de aprendizaje (0.002–0.008), la longitud de secuencia (8–16 pasos) y los umbrales de señal. Agresivo = red más grande que memoriza más patrones; conservador = red más pequeña y secuencias más cortas para generalizar mejor.",
+      "Cambia el tamaño del estado oculto (10–18 neuronas), la tasa de aprendizaje (0.002–0.008), la longitud de secuencia (12–20 pasos) y los umbrales de señal. Agresivo = red más grande que captura más patrones; conservador = red más pequeña y secuencias más cortas para generalizar mejor.",
   },
 };
 

@@ -12,6 +12,9 @@
     "paths": {
       "@/*": [
         "./src/*"
+      ],
+      "@btc-arena/core": [
+        "./packages/core/src/index.ts"
       ]
     },
     /* Bundler mode */

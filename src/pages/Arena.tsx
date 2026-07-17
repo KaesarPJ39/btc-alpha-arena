@@ -5,6 +5,7 @@ import { PriceChart } from "@/sections/PriceChart";
 import { InsightsPanel } from "@/sections/InsightsPanel";
 import { CreditPanel } from "@/sections/CreditPanel";
 import { TradesTable } from "@/sections/TradesTable";
+import { TradeLog, RiskDashboard } from "@/sections/TradeLog";
 import { AgentCard } from "@/sections/AgentCard";
 import { fmtPct } from "@/lib/format";
 import { MODEL_IDS, MODELS } from "@/lib/registry";
@@ -34,7 +35,7 @@ export function ArenaPage({ snap }: Props) {
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-bold tracking-tight">Arena · Batalla de 5 modelos</h2>
             <p className="text-[11px] text-muted-foreground">
-              Q-Learning · Gradient Boosting · Statistical · Random Forest · LSTM · comparando en vivo contra Buy & Hold
+              Q-Learning · Gradient Boosting · Statistical · Random Forest · GRU · comparando en vivo contra Buy & Hold
             </p>
           </div>
           <div className="text-right">
@@ -131,6 +132,10 @@ export function ArenaPage({ snap }: Props) {
         <TradesTable trades={snap.trades} />
       </section>
 
+      {/* Log de operaciones y dashboard de riesgo */}
+      <TradeLog snap={snap} />
+      <RiskDashboard snap={snap} />
+
       {/* Crédito */}
       <CreditPanel snap={snap} />
 
@@ -139,8 +144,8 @@ export function ArenaPage({ snap }: Props) {
 
       <footer className="border-t border-border/50 pt-4 pb-6 text-center text-[10px] leading-relaxed text-muted-foreground">
         <p>
-          BTC Alpha Arena — Simulación educativa con precios reales de BTC/USD vía API pública.
-          Los 5 modelos se ejecutan íntegramente en tu navegador.
+          BTC Alpha Arena — Simulación con precios reales de BTC/USD vía API pública.
+          Ahora con backend Node.js + WebSocket, risk management y persistencia de modelos.
         </p>
         <p className="mt-1">
           No constituye asesoramiento financiero. Rentabilidades pasadas no garantizan resultados futuros.

@@ -15,8 +15,9 @@ export default function App() {
       <div className="arena-bg flex min-h-screen items-center justify-center">
         <div className="text-center">
           <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" />
-          <p className="text-sm text-muted-foreground">Iniciando motores de trading…</p>
-          <p className="mt-1 text-[11px] text-muted-foreground/70">Cargando 5 modelos · BTC/USD</p>
+          <p className="text-sm text-muted-foreground">Conectando con el backend de trading…</p>
+          <p className="mt-1 text-[11px] text-muted-foreground/70">{sim.mode === "loading" ? "Esperando servidor WebSocket…" : "Cargando 5 modelos · BTC/USD"}</p>
+          <p className="mt-2 text-[10px] text-muted-foreground/50">{sim.wsUrl}</p>
         </div>
       </div>
     );
@@ -31,6 +32,10 @@ export default function App() {
         running={snap.running}
         onToggle={sim.toggleRunning}
         onReset={sim.reset}
+        onExport={sim.exportModels}
+        onImport={sim.importModels}
+        mode={sim.mode}
+        connected={sim.connected}
       />
       <div className="mx-auto flex max-w-[1500px] gap-0 px-0">
         <Sidebar />
@@ -42,7 +47,7 @@ export default function App() {
             <Route path="/model/xgb" element={<ModelPage snap={snap} modelId="xgb" onTune={sim.setAggression} />} />
             <Route path="/model/stat" element={<ModelPage snap={snap} modelId="stat" onTune={sim.setAggression} />} />
             <Route path="/model/rf" element={<ModelPage snap={snap} modelId="rf" onTune={sim.setAggression} />} />
-            <Route path="/model/lstm" element={<ModelPage snap={snap} modelId="lstm" onTune={sim.setAggression} />} />
+            <Route path="/model/gru" element={<ModelPage snap={snap} modelId="gru" onTune={sim.setAggression} />} />
             <Route path="/docs" element={<DocsPage />} />
             <Route path="*" element={<Navigate to="/arena" replace />} />
           </Routes>

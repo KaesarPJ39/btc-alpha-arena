@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Activity, Bitcoin, CircleDot, KeyRound, Loader2, Pause, Play, RotateCcw, Wifi } from "lucide-react";
+import { Activity, Bitcoin, CircleDot, Download, KeyRound, Loader2, Pause, Play, RotateCcw, Upload, Wifi } from "lucide-react";
 import type { MarketStats } from "@/lib/engine";
 import { fmtPct, fmtTime, fmtUSD } from "@/lib/format";
 import { Button } from "@/components/ui/button";
@@ -13,15 +13,21 @@ interface Props {
   running: boolean;
   onToggle: () => void;
   onReset: () => Promise<void>;
+  onExport?: () => Promise<unknown>;
+  onImport?: (state: unknown) => Promise<void>;
+  mode?: "websocket" | "local" | "loading";
+  connected?: boolean;
 }
 
-export function Header({ market, status, statusDetail, running, onToggle, onReset }: Props) {
+export function Header({ market, status, statusDetail, running, onToggle, onReset, onExport, onImport, mode = "loading", connected = false }: Props) {
   const prevPrice = useRef(0);
   const [flash, setFlash] = useState<"up" | "down" | null>(null);
   const [showReset, setShowReset] = useState(false);
   const [pwd, setPwd] = useState("");
   const [pwdError, setPwdError] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
   const pwdRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -36,9 +42,11 @@ export function Header({ market, status, statusDetail, running, onToggle, onRese
 
   useEffect(() => {
     if (showReset) {
-      setPwd("");
-      setPwdError(false);
-      setIsResetting(false);
+      queueMicrotask(() => {
+        setPwd("");
+        setPwdError(false);
+        setIsResetting(false);
+      });
       setTimeout(() => pwdRef.current?.focus(), 50);
     }
   }, [showReset]);
@@ -61,6 +69,36 @@ export function Header({ market, status, statusDetail, running, onToggle, onRese
     }
   };
 
+  const handleExport = async () => {
+    if (!onExport) return;
+    setIsExporting(true);
+    try {
+      const state = await onExport();
+      const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `btc-arena-models-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // ignore
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleImportFile = async (file: File) => {
+    if (!onImport) return;
+    try {
+      const text = await file.text();
+      const state = JSON.parse(text);
+      await onImport(state);
+    } catch {
+      // ignore
+    }
+  };
+
   const up = market.change24h >= 0;
 
   return (
@@ -76,7 +114,7 @@ export function Header({ market, status, statusDetail, running, onToggle, onRese
               BTC Alpha Arena
             </h1>
             <p className="text-[11px] leading-tight text-muted-foreground">
-              Q-Learning · XGBoost · Statistical · Random Forest · RNN · BTC/USD en vivo
+              Q-Learning · XGBoost · Statistical · Random Forest · GRU · BTC/USD en vivo
             </p>
           </div>
         </div>
@@ -122,12 +160,14 @@ export function Header({ market, status, statusDetail, running, onToggle, onRese
                     : "bg-amber-400 animate-pulse"
               }`}
             />
-            <div className="text-right">
-              <p className="text-[11px] font-medium leading-tight">
-                {status === "live" ? "Mercado en vivo" : status === "error" ? "Error" : "Preparando"}
-              </p>
-              <p className="text-[10px] leading-tight text-muted-foreground">{statusDetail}</p>
-            </div>
+          <div className="text-right">
+            <p className="text-[11px] font-medium leading-tight">
+              {status === "live" ? "Mercado en vivo" : status === "error" ? "Error" : "Preparando"}
+              {mode === "websocket" && <span className={`ml-1.5 text-[9px] ${connected ? "text-emerald-400" : "text-rose-400"}`}>● WS</span>}
+              {mode === "local" && <span className="ml-1.5 text-[9px] text-amber-400">● LOCAL</span>}
+            </p>
+            <p className="text-[10px] leading-tight text-muted-foreground">{statusDetail}</p>
+          </div>
           </div>
           <Button
             variant="outline"
@@ -148,6 +188,37 @@ export function Header({ market, status, statusDetail, running, onToggle, onRese
             {isResetting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
             {isResetting ? "Reiniciando…" : "Reset"}
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExport}
+            disabled={isExporting || !onExport}
+            className="gap-1.5 border-border/80 bg-card/60 text-xs hover:bg-accent disabled:opacity-50"
+          >
+            {isExporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+            Export
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => fileRef.current?.click()}
+            disabled={!onImport}
+            className="gap-1.5 border-border/80 bg-card/60 text-xs hover:bg-accent disabled:opacity-50"
+          >
+            <Upload className="h-3.5 w-3.5" />
+            Import
+          </Button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="application/json"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void handleImportFile(file);
+              e.target.value = "";
+            }}
+          />
         </div>
       </div>
 

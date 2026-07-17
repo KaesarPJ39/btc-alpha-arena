@@ -120,33 +120,33 @@ const DOCS: DocEntry[] = [
       "correlación si las features técnicas contienen redundancias (RSI/MACD similares).",
   },
   {
-    id: "lstm",
+    id: "gru",
     icon: Network,
-    title: "LSTM — Red Neuronal Recurrente",
-    subtitle: "Célula LSTM con puertas forget/input/output · BPTT truncado",
+    title: "GRU — Red Neuronal Recurrente",
+    subtitle: "Célula GRU con puertas de actualización y reinicio · BPTT completo",
     howItWorks:
-      "Red neuronal con células Long Short-Term Memory. En cada paso procesa un vector de 6 features (retorno1, RSI, " +
-      "volatilidad, momentum5, momentum15, cruce EMA) y mantiene un estado interno oculto (h) y de célula (c). " +
-      "Tres puertas.sigmoideas controlan qué se olvida (forget), qué se añade (input), qué se expone (output). " +
-      "Salida: σ(Wout·h + bout) = P(subida próxima barra). Entrena con BPTT truncado a 3 pasos sobre secuencias de 8-16 " +
-      "pasos. He inicialización tipo He. Loss = log-loss. " +
-      "Regularización L2 en pesos. Online: el motor mantiene las últimas features como ventana y reentrena cada 50 ticks.",
+      "Red neuronal con células Gated Recurrent Unit. En cada paso procesa un vector de 10 features técnicas " +
+      "y mantiene un estado interno oculto (h). Dos puertas sigmoides controlan qué se conserva (update gate z) " +
+      "y qué se reinicia (reset gate r) antes de calcular el nuevo candidato. " +
+      "Salida: σ(Wout·h + bout) = P(subida próxima barra). Entrena con BPTT completo sobre secuencias de 20 " +
+      "pasos. Xavier/Glorot init. Loss = log-loss. " +
+      "Adam optimizer con weight decay 1e-5 y LayerNorm en cada paso temporal. Online: el motor mantiene las últimas features como ventana y reentrena cada 50 ticks.",
     hyperparams: [
-      "hidden_size: 6→14 unidades (según agresividad)",
-      "sequence_length: 8→16 pasos de ventana",
-      "learning_rate: 0.02→0.08",
-      "λ (L2): 1e-3→1e-2 (regularización)",
-      "BPTT truncado: 3 pasos hacia atrás",
-      "Input size: 6 features clave",
-      "Activación: tanh en célula, sigmoid en puertas y salida",
+      "hidden_size: 10→18 unidades (según agresividad)",
+      "sequence_length: 12→20 pasos de ventana",
+      "learning_rate: 0.002→0.008",
+      "weight_decay: 1e-5",
+      "BPTT: completo sobre toda la secuencia",
+      "Input size: 10 features técnicas",
+      "Activación: tanh en candidato, sigmoid en puertas y salida",
     ],
     aggressiveness:
-      "Conservador: red más pequeña (6 unidades) y window corta (8 pasos), LR bajo 0.02, λ alto 1e-2 " +
-      "(más regularización, evita overfit). Temerario: 14 hidden, 16 pasos de historia, LR 0.08 y λ 1e-3 " +
+      "Conservador: red más pequeña (10 unidades) y window corta (12 pasos), LR bajo 0.002 " +
+      "(más regularización, evita overfit). Temerario: 18 hidden, 20 pasos de historia, LR 0.008 " +
       "(permite capturar más patrones a riesgo de sobreajuste).",
     caveats:
-      "Implementación propia simplificada: BPTT truncado a 3 pasos es limitado para dependencias de muy largo plazo. " +
-      "Red pequeña para mantener entrenamiento viable en navegador (~segundos por racha de 30 updates).",
+      "Implementación propia en JavaScript: el backend permite escalar a secuencias más largas y estados ocultos " +
+      "mayores. La versión actual usa 10-18 neuronas para mantener latencia baja en el simulador.",
   },
 ];
 
@@ -155,7 +155,7 @@ const ICONS: Record<ModelId, LucideIcon> = {
   xgb: LineChart,
   stat: Sigma,
   rf: TreePine,
-  lstm: Network,
+  gru: Network,
 };
 
 export function DocsPage() {

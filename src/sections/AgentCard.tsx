@@ -10,7 +10,7 @@ const ICONS: Record<ModelId, LucideIcon> = {
   xgb: LineChart,
   stat: Sigma,
   rf: TreePine,
-  lstm: Network,
+  gru: Network,
 };
 
 interface Props {

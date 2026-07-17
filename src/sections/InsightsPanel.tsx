@@ -31,9 +31,9 @@ export function InsightsPanel({ snap }: Props) {
     () => [...(snap.modelInfo.rf.featureImportance ?? [])].sort((a, b) => b.value - a.value),
     [snap.modelInfo.rf.featureImportance]
   );
-  const lstmFi = useMemo(
-    () => [...(snap.modelInfo.lstm.featureImportance ?? [])].sort((a, b) => b.value - a.value),
-    [snap.modelInfo.lstm.featureImportance]
+  const gruFi = useMemo(
+    () => [...(snap.modelInfo.gru.featureImportance ?? [])].sort((a, b) => b.value - a.value),
+    [snap.modelInfo.gru.featureImportance]
   );
   const statInfo = snap.modelInfo.stat;
 
@@ -156,44 +156,44 @@ export function InsightsPanel({ snap }: Props) {
         }
       />
 
-      {/* LSTM: parámetros */}
+      {/* GRU: parámetros */}
       <div className="glass-card rounded-2xl p-5">
         <div className="mb-1 flex items-center gap-2">
           <span className="h-2 w-2 rounded-full" style={{ background: "#ec4899" }} />
-          <h3 className="text-sm font-bold tracking-tight">LSTM · red neuronal recurrente</h3>
+          <h3 className="text-sm font-bold tracking-tight">GRU · red neuronal recurrente</h3>
         </div>
         <p className="mb-4 text-[11px] text-muted-foreground">
-          Estado interno y progreso de entrenamiento (BPTT truncado, secuencia = {snap.modelInfo.lstm.extras.seqLength ?? 0} pasos)
+          Estado interno y progreso de entrenamiento (BPTT truncado, secuencia = {snap.modelInfo.gru.extras.seqLength ?? 0} pasos)
         </p>
         <div className="grid grid-cols-2 gap-3 text-[11px]">
-          <Box label="Hidden size" value={`${snap.modelInfo.lstm.extras.hiddenSize ?? 0}`} />
-          <Box label="Seq length" value={`${snap.modelInfo.lstm.extras.seqLength ?? 0}`} />
-          <Box label="LR" value={(snap.modelInfo.lstm.extras.learningRate ?? 0).toFixed(4)} />
-          <Box label="λ (L2)" value={(snap.modelInfo.lstm.extras.lambda ?? 0).toExponential(1)} />
-          <Box label="Pasos de entrenamiento" value={`${snap.modelInfo.lstm.extras.trainingSteps ?? 0}`} />
-          <Box label="Muestras" value={`${snap.modelInfo.lstm.sampleCount}`} />
+          <Box label="Hidden size" value={`${snap.modelInfo.gru.extras.hiddenSize ?? 0}`} />
+          <Box label="Seq length" value={`${snap.modelInfo.gru.extras.seqLength ?? 0}`} />
+          <Box label="LR" value={(snap.modelInfo.gru.extras.learningRate ?? 0).toFixed(4)} />
+          <Box label="λ (L2)" value={(snap.modelInfo.gru.extras.lambda ?? 0).toExponential(1)} />
+          <Box label="Pasos de entrenamiento" value={`${snap.modelInfo.gru.extras.trainingSteps ?? 0}`} />
+          <Box label="Muestras" value={`${snap.modelInfo.gru.sampleCount}`} />
         </div>
         <div className="mt-3 rounded-xl border border-pink-500/20 bg-pink-500/5 px-3 py-2 text-[11px]">
-          <span className="text-muted-foreground">P(subida) por LSTM: </span>
-          <span className={`font-bold tabular-nums ${snap.modelInfo.lstm.probability >= 0.5 ? "text-emerald-400" : "text-rose-400"}`}>
-            {(snap.modelInfo.lstm.probability * 100).toFixed(1)}%
+          <span className="text-muted-foreground">P(subida) por GRU: </span>
+          <span className={`font-bold tabular-nums ${snap.modelInfo.gru.probability >= 0.5 ? "text-emerald-400" : "text-rose-400"}`}>
+            {(snap.modelInfo.gru.probability * 100).toFixed(1)}%
           </span>
-          <ProbBar p={snap.modelInfo.lstm.probability} toneHex="#ec4899" />
+          <ProbBar p={snap.modelInfo.gru.probability} toneHex="#ec4899" />
         </div>
       </div>
 
-      {/* LSTM FI (sintética) */}
+      {/* GRU FI (sintética) */}
       <FeatureImportanceCard
-        title="LSTM · importancia estimada de inputs"
+        title="GRU · importancia estimada de inputs"
         hint="Basado en frecuencia de activación (aproximación)"
         colorHex="#ec4899"
         accent="#ec4899"
         fallback="#7a3a5a"
-        data={lstmFi}
+        data={gruFi}
         stats={[
-          { label: "Hidden", value: `${snap.modelInfo.lstm.extras.hiddenSize ?? 0}` },
-          { label: "Pasos", value: `${snap.modelInfo.lstm.extras.trainingSteps ?? 0}` },
-          { label: "Reentrenado", value: snap.modelInfo.lstm.lastTrainAt },
+          { label: "Hidden", value: `${snap.modelInfo.gru.extras.hiddenSize ?? 0}` },
+          { label: "Pasos", value: `${snap.modelInfo.gru.extras.trainingSteps ?? 0}` },
+          { label: "Reentrenado", value: snap.modelInfo.gru.lastTrainAt },
         ]}
       />
     </div>
