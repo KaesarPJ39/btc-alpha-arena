@@ -829,8 +829,8 @@ export class RandomForestModel implements Tunable {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 5. LSTMModel — RNN simple con tanh y BPTT-7.
-// Gradient clipping + momentum SGD para estabilidad.
+// 5. LSTMModel — RNN simple con tanh, BPTT-7, Adam optimizer,
+// gradient clipping adaptativo y todas las 10 features.
 // ════════════════════════════════════════════════════════════════════════════
 
 interface RnnParams {
@@ -852,10 +852,10 @@ function randomGaussian(): number {
 export class LSTMModel implements Tunable {
   private hiddenSize = 8;
   private seqLength = 12;
-  private inputSize = 6;
+  private inputSize = 10;
   private params!: RnnParams;
   private aggressiveness = 0.5;
-  private learningRate = 0.05;
+  private learningRate = 0.005;
   private samples = 0;
   private lastProbability = 0.5;
   private lastConfidence = 0;
@@ -863,13 +863,22 @@ export class LSTMModel implements Tunable {
   private trainLoss: number[] = [];
   private initializationDone = false;
   private trainingSteps = 0;
-  private velocity: { W: Float64Array; U: Float64Array; b: Float64Array; Wout: Float64Array; bout: number } | null = null;
+  private adam: {
+    mW: Float64Array; vW: Float64Array;
+    mU: Float64Array; vU: Float64Array;
+    mb: Float64Array; vb: Float64Array;
+    mWout: Float64Array; vWout: Float64Array;
+    mbout: number; vbout: number;
+    t: number;
+  } | null = null;
+  private gradNormEMA = 1.0;
+  private featureImportanceRaw: number[] = [];
   buyThreshold = 0.55;
   sellThreshold = 0.45;
 
   setAggression(level: AggressionLevel): void {
     this.aggressiveness = aggressionToProfile(level);
-    this.learningRate = 0.04 + this.aggressiveness * 0.12;
+    this.learningRate = 0.002 + this.aggressiveness * 0.006;
     const _h = Math.round(8 + this.aggressiveness * 8);
     const _s = Math.round(8 + this.aggressiveness * 8);
     const spread = 0.05 + (1 - this.aggressiveness) * 0.03;
@@ -889,26 +898,38 @@ export class LSTMModel implements Tunable {
     const W = new Float64Array(h * inputSize);
     const U = new Float64Array(h * h);
     const b = new Float64Array(h);
-    const scaleW = Math.sqrt(1 / inputSize);
-    const scaleU = Math.sqrt(1 / h);
+    // Xavier/Glorot init for tanh: sqrt(2 / (fan_in + fan_out))
+    const scaleW = Math.sqrt(2 / (inputSize + h));
+    const scaleU = Math.sqrt(2 / (h + h));
     for (let i = 0; i < W.length; i++) W[i] = randomGaussian() * scaleW;
     for (let i = 0; i < U.length; i++) U[i] = randomGaussian() * scaleU;
     const Wout = new Float64Array(h);
-    for (let i = 0; i < Wout.length; i++) Wout[i] = randomGaussian() * 0.05;
+    const scaleOut = Math.sqrt(1 / h);
+    for (let i = 0; i < Wout.length; i++) Wout[i] = randomGaussian() * scaleOut;
     this.params = { W, U, b, Wout, bout: 0 };
-    this.velocity = { W: new Float64Array(W.length), U: new Float64Array(U.length), b: new Float64Array(b.length), Wout: new Float64Array(Wout.length), bout: 0 };
+    this.adam = {
+      mW: new Float64Array(W.length), vW: new Float64Array(W.length),
+      mU: new Float64Array(U.length), vU: new Float64Array(U.length),
+      mb: new Float64Array(b.length), vb: new Float64Array(b.length),
+      mWout: new Float64Array(Wout.length), vWout: new Float64Array(Wout.length),
+      mbout: 0, vbout: 0, t: 0,
+    };
     this.initializationDone = true;
   }
 
-  /** Selección de 6 features clave para la RNN */
+  /** Las 10 features completas para la RNN */
   private toSubInput(f: number[]): number[] {
     return [
       f[0] ?? 0, // Retorno 1
+      f[1] ?? 0, // Retorno 3
       f[2] ?? 0, // RSI-14
+      f[3] ?? 0, // MACD hist
       f[4] ?? 0, // Volatilidad 20
       f[5] ?? 0, // Momentum 5
       f[6] ?? 0, // Momentum 15
       f[7] ?? 0, // EMA9/EMA21
+      f[8] ?? 0, // EMA21/EMA50
+      f[9] ?? 0, // Precio/EMA50
     ];
   }
 
@@ -943,9 +964,10 @@ export class LSTMModel implements Tunable {
     return { output: sigmoid(logit), hStates };
   }
 
-  /** BPTT simplificado para RNN tanh */
+  /** BPTT simplificado para RNN tanh con Adam optimizer */
   private bptt(seq: number[][], target: number, hStates: number[][]): number {
     const p = this.params;
+    const a = this.adam!;
     const h = this.hiddenSize;
     const xSize = this.inputSize;
     const T = hStates.length;
@@ -989,14 +1011,17 @@ export class LSTMModel implements Tunable {
       }
     }
 
-    // Gradient clipping
+    // Dynamic gradient clipping: threshold adapts via EMA of gradient norm
     let gNorm = 0;
     for (let i = 0; i < gradW.length; i++) gNorm += gradW[i] * gradW[i];
     for (let i = 0; i < gradU.length; i++) gNorm += gradU[i] * gradU[i];
     for (let i = 0; i < gradB.length; i++) gNorm += gradB[i] * gradB[i];
     for (let i = 0; i < gradWout.length; i++) gNorm += gradWout[i] * gradWout[i];
     gNorm += gradBout * gradBout;
-    const gScale = gNorm > 1.0 ? 1.0 / Math.sqrt(gNorm) : 1.0;
+    gNorm = Math.sqrt(gNorm);
+    this.gradNormEMA = 0.95 * this.gradNormEMA + 0.05 * gNorm;
+    const clipThresh = Math.max(1.0, 2.0 * this.gradNormEMA);
+    const gScale = gNorm > clipThresh ? clipThresh / gNorm : 1.0;
     if (gScale < 1.0) {
       for (let i = 0; i < gradW.length; i++) gradW[i] *= gScale;
       for (let i = 0; i < gradU.length; i++) gradU[i] *= gScale;
@@ -1004,15 +1029,39 @@ export class LSTMModel implements Tunable {
       for (let i = 0; i < gradWout.length; i++) gradWout[i] *= gScale;
       gradBout *= gScale;
     }
-    // Momentum SGD
-    const mu = 0.9;
+
+    // Adam optimizer (β1=0.9, β2=0.999, ε=1e-8)
+    a.t++;
     const lr = this.learningRate;
-    for (let i = 0; i < p.W.length; i++) { const v = mu * this.velocity!.W[i] + lr * gradW[i]; this.velocity!.W[i] = v; p.W[i] -= v; }
-    for (let i = 0; i < p.U.length; i++) { const v = mu * this.velocity!.U[i] + lr * gradU[i]; this.velocity!.U[i] = v; p.U[i] -= v; }
-    for (let i = 0; i < p.b.length; i++) { const v = mu * this.velocity!.b[i] + lr * gradB[i]; this.velocity!.b[i] = v; p.b[i] -= v; }
-    for (let i = 0; i < p.Wout.length; i++) { const v = mu * this.velocity!.Wout[i] + lr * gradWout[i]; this.velocity!.Wout[i] = v; p.Wout[i] -= v; }
-    this.velocity!.bout = mu * this.velocity!.bout + lr * gradBout;
-    p.bout -= this.velocity!.bout;
+    const b1 = 0.9;
+    const b2 = 0.999;
+    const eps = 1e-8;
+    const bc1 = 1 - Math.pow(b1, a.t);
+    const bc2 = 1 - Math.pow(b2, a.t);
+
+    for (let i = 0; i < p.W.length; i++) {
+      a.mW[i] = b1 * a.mW[i] + (1 - b1) * gradW[i];
+      a.vW[i] = b2 * a.vW[i] + (1 - b2) * gradW[i] * gradW[i];
+      p.W[i] -= lr * (a.mW[i] / bc1) / (Math.sqrt(a.vW[i] / bc2) + eps);
+    }
+    for (let i = 0; i < p.U.length; i++) {
+      a.mU[i] = b1 * a.mU[i] + (1 - b1) * gradU[i];
+      a.vU[i] = b2 * a.vU[i] + (1 - b2) * gradU[i] * gradU[i];
+      p.U[i] -= lr * (a.mU[i] / bc1) / (Math.sqrt(a.vU[i] / bc2) + eps);
+    }
+    for (let i = 0; i < p.b.length; i++) {
+      a.mb[i] = b1 * a.mb[i] + (1 - b1) * gradB[i];
+      a.vb[i] = b2 * a.vb[i] + (1 - b2) * gradB[i] * gradB[i];
+      p.b[i] -= lr * (a.mb[i] / bc1) / (Math.sqrt(a.vb[i] / bc2) + eps);
+    }
+    for (let i = 0; i < p.Wout.length; i++) {
+      a.mWout[i] = b1 * a.mWout[i] + (1 - b1) * gradWout[i];
+      a.vWout[i] = b2 * a.vWout[i] + (1 - b2) * gradWout[i] * gradWout[i];
+      p.Wout[i] -= lr * (a.mWout[i] / bc1) / (Math.sqrt(a.vWout[i] / bc2) + eps);
+    }
+    a.mbout = b1 * a.mbout + (1 - b1) * gradBout;
+    a.vbout = b2 * a.vbout + (1 - b2) * gradBout * gradBout;
+    p.bout -= lr * (a.mbout / bc1) / (Math.sqrt(a.vbout / bc2) + eps);
 
     return -(target * Math.log(outProb + 1e-9) + (1 - target) * Math.log(1 - outProb + 1e-9));
   }
@@ -1055,6 +1104,21 @@ export class LSTMModel implements Tunable {
   }
 
   snapshot(_featNames?: string[]): ModelSnapshot {
+    // Compute real feature importance from input weight magnitudes
+    if (this.initializationDone && this.params) {
+      const p = this.params;
+      const h = this.hiddenSize;
+      const xSize = this.inputSize;
+      const imp = new Array(xSize).fill(0);
+      for (let j = 0; j < h; j++) {
+        for (let k = 0; k < xSize; k++) {
+          imp[k] += Math.abs(p.W[j * xSize + k]);
+        }
+      }
+      const total = imp.reduce((a, b) => a + b, 0) || 1;
+      this.featureImportanceRaw = imp.map((v) => v / total);
+    }
+    const featNames = _featNames ?? ["Retorno 1", "Retorno 3", "RSI-14", "MACD hist", "Volatilidad 20", "Momentum 5", "Momentum 15", "EMA9/EMA21", "EMA21/EMA50", "Precio/EMA50"];
     return {
       probability: this.lastProbability,
       signal: this.pickSignal(this.lastProbability),
@@ -1069,15 +1133,13 @@ export class LSTMModel implements Tunable {
         learningRate: this.learningRate,
         trainingSteps: this.trainingSteps,
         aggressiveness: this.aggressiveness,
+        gradNormEMA: this.gradNormEMA,
+        adamT: this.adam?.t ?? 0,
       },
-      featureImportance: [
-        { name: "Retorno 1", value: 0.22 },
-        { name: "RSI-14", value: 0.18 },
-        { name: "Volatilidad 20", value: 0.20 },
-        { name: "Momentum 5", value: 0.16 },
-        { name: "Momentum 15", value: 0.12 },
-        { name: "Cruce EMA", value: 0.12 },
-      ],
+      featureImportance: featNames.slice(0, this.featureImportanceRaw.length).map((name, i) => ({
+        name,
+        value: this.featureImportanceRaw[i] ?? 0,
+      })),
       lossHistory: [...this.trainLoss].slice(-50),
     };
   }
