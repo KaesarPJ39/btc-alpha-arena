@@ -418,6 +418,7 @@ export class TradingEngine {
   private listener: (() => void) | null = null;
   private busy = false;
   private aborted = false;
+  private startGeneration = 0;
 
   constructor() {
     MODEL_IDS.forEach((id) => this.modelLookup[id].setAggression(this.aggressionPerModel[id]));
@@ -438,13 +439,14 @@ export class TradingEngine {
   }
 
   async start(): Promise<void> {
+    const gen = ++this.startGeneration;
     try {
       this.status = "loading";
       this.statusDetail = "Descargando histórico 1m de BTC/USD…";
       this.emit();
 
       const klines = await fetchKlines(320);
-      if (this.aborted) return;
+      if (this.aborted || gen !== this.startGeneration) return;
       this.closes = klines.map((k) => k.close);
       this.times = klines.map((k) => k.t);
       this.minuteCloses = [...this.closes];
@@ -458,13 +460,14 @@ export class TradingEngine {
       this.emit();
       await sleep(30);
 
+      if (gen !== this.startGeneration) return;
       this.trainInitialModels(this.closes.length - 2);
 
       this.statusDetail = "Backtest walk-forward: 5 modelos…";
       this.emit();
       this.bhBtc = LOAN_PRINCIPAL / this.closes[WARMUP];
       for (let i = WARMUP; i < this.closes.length; i++) {
-        if (this.aborted) return;
+        if (this.aborted || gen !== this.startGeneration) return;
         this.step(i, 60, false);
         if (i % 40 === 0) {
           this.statusDetail = `Backtest ${Math.round(((i - WARMUP) / (this.closes.length - WARMUP)) * 100)}% · 5 modelos`;
@@ -473,14 +476,15 @@ export class TradingEngine {
         }
       }
 
-      if (this.aborted) return;
+      if (this.aborted || gen !== this.startGeneration) return;
       this.status = "live";
       this.statusDetail = "En vivo · actualizando cada 3 s";
       this.market = await fetchSpotPrice().catch(() => this.market);
-      if (this.aborted) return;
+      if (this.aborted || gen !== this.startGeneration) return;
       this.emit();
       this.timer = setInterval(() => void this.liveTick(), 3000);
     } catch (e) {
+      if (gen !== this.startGeneration) return;
       this.status = "error";
       this.statusDetail = e instanceof Error ? e.message : "Error de conexión";
       this.emit();
@@ -496,7 +500,7 @@ export class TradingEngine {
   /** Reset completo: limpia todo el estado y relanza desde cero */
   async reset(): Promise<void> {
     this.stop();
-    await new Promise((r) => setTimeout(r, 50));
+    this.aborted = false;
 
     // 1. Recrear cuentas
     this.accounts = {
@@ -538,11 +542,14 @@ export class TradingEngine {
     this.lastSignals = { rl: "hold", xgb: "hold", stat: "hold", rf: "hold", lstm: "hold" };
     this.lastProbabilities = { rl: 0.5, xgb: 0.5, stat: 0.5, rf: 0.5, lstm: 0.5 };
     this.lastStatOutcome = undefined;
-
-    this.aborted = false;
     this.market = { price: 0, change24h: 0, high24h: 0, low24h: 0, volume24h: 0, source: "—", lastUpdate: 0 };
 
-    // 4. Relanzar todo el pipeline
+    // 4. Emitir estado limpio INMEDIATAMENTE para que la UI se actualice
+    this.status = "loading";
+    this.statusDetail = "Reiniciando simulación…";
+    this.emit();
+
+    // 5. Relanzar todo el pipeline
     await this.start();
   }
 
