@@ -33,12 +33,6 @@ function sigmoid(x: number): number {
   return 1 / (1 + Math.exp(-Math.min(Math.max(x, -50), 50)));
 }
 
-function bin(v: number, lo: number, hi: number, bins: number): number {
-  const range = hi - lo;
-  const t = range > 0 ? clamp((v - lo) / range, 0, 0.9999) : 0.5;
-  return Math.floor(t * bins);
-}
-
 function randomGaussian(): number {
   let u = 0;
   let v = 0;
@@ -71,34 +65,25 @@ export interface RlStateInput {
 }
 
 export class QLearningAgent implements Tunable {
-  private q = new Map<number, Float64Array>();
-  private visits = new Map<number, number>();
-  private alpha = 0.12;
-  private gamma = 0.92;
+  // Pesos adaptativos para cada característica del estado:
+  // [momentum, rsi, volatility, trend, position]
+  private weights = new Float64Array([0.1, 0.05, -0.05, 0.1, 0.0]);
+  private bias = 0.0;
+
+  private alpha = 0.02; // Tasa de aprendizaje
+  private gamma = 0.90;
   private lambda = 0.7;
-  private epsilon = 0.25;
+  private epsilon = 0.15; // Probabilidad de exploración
   readonly epsilonMin = 0.01;
-  readonly epsilonDecay = 0.9985;
+  readonly epsilonDecay = 0.995;
   private aggressiveness = 0.5;
   private lastState: RlStateInput = { momentum: 0, rsi: 0, volatility: 0, trend: 0, position: 0 };
+
   totalReward = 0;
   updates = 0;
   lastAction: Action = 1;
   lastReward = 0;
   rewardHistory: number[] = [];
-  private stateBins = 5;
-  private expS = Array.from({ length: 100 }, () => [0, 0, 0, 0, 0]);
-  private expSN = Array.from({ length: 100 }, () => [0, 0, 0, 0, 0]);
-  private expA = new Uint8Array(100);
-  private expR = new Float64Array(100);
-  private expPtr = 0;
-  private expCount = 0;
-  // Eligibility traces: ring buffer of recent (stateKey, action) pairs
-  private traceKeys: number[] = new Array(12).fill(0);
-  private traceActions: number[] = new Array(12).fill(0);
-  private traceLen = 0;
-  private tracePtr = 0;
-  private readonly TRACE_CAP = 12;
 
   get epsilonValue(): number {
     return this.epsilon;
@@ -106,182 +91,127 @@ export class QLearningAgent implements Tunable {
 
   setAggression(level: AggressionLevel): void {
     this.aggressiveness = aggressionToProfile(level);
-    this.epsilon = Math.max(this.epsilonMin, 0.05 + this.aggressiveness * 0.30);
-    this.alpha = 0.06 + this.aggressiveness * 0.10;
-    this.gamma = 0.98 - this.aggressiveness * 0.10;
+    this.epsilon = Math.max(this.epsilonMin, 0.02 + this.aggressiveness * 0.18);
+    // Ajustar velocidad de aprendizaje según nivel de agresividad
+    this.alpha = 0.01 + this.aggressiveness * 0.03;
   }
 
-  private stateKey(s: RlStateInput): number {
-    const b = this.stateBins;
-    return (
-      (((bin(s.momentum, -1, 1, b) * b + bin(s.rsi, -1, 1, b)) * b +
-        bin(s.volatility, 0, 1, b)) *
-        b +
-        bin(s.trend, -1, 1, b)) *
-        b +
-      bin(s.position, 0, 1, b)
-    );
-  }
-
-  private row(key: number): Float64Array {
-    let r = this.q.get(key);
-    if (!r) {
-      r = new Float64Array([1, 1, 1]);
-      this.q.set(key, r);
-    }
-    return r;
-  }
-
-  private touch(key: number): number {
-    const v = (this.visits.get(key) ?? 0) + 1;
-    this.visits.set(key, v);
-    return v;
-  }
-
-  /** ε-greedy con sesgo de acción según agresividad */
+  /**
+   * Decide la acción de forma estadística usando los pesos actuales.
+   * Calcula la probabilidad de subida del mercado.
+   */
   act(s: RlStateInput, explore = true): Action {
-    const key = this.stateKey(s);
-    const r = this.row(key);
+    // Combinación lineal de indicadores
+    let logit = this.bias +
+      this.weights[0] * s.momentum +
+      this.weights[1] * s.rsi +
+      this.weights[2] * s.volatility +
+      this.weights[3] * s.trend +
+      this.weights[4] * s.position;
+
+    const prob = sigmoid(logit);
     let a: Action;
-    const roll = Math.random();
-    const exploreThreshold =
-      explore && this.aggressiveness < 0.5
-        ? this.epsilon
-        : this.epsilon * (1 - 0.3 * this.aggressiveness);
-    if (explore && roll < exploreThreshold) {
-      const buyBias = this.aggressiveness;
-      const sellBias = 1 - this.aggressiveness;
-      const rnd = Math.random();
-      if (rnd < buyBias / 3) a = 2 as Action;
-      else if (rnd < buyBias / 3 + sellBias / 3) a = 0 as Action;
-      else a = Math.floor(Math.random() * 3) as Action;
+
+    // Exploración estadística rápida (epsilon-greedy)
+    if (explore && Math.random() < this.epsilon) {
+      a = Math.floor(Math.random() * 3) as Action;
     } else {
-      a = r[0] >= r[1] && r[0] >= r[2] ? 0 : r[1] >= r[2] ? 1 : 2;
-      if (r[0] === r[1] && r[1] === r[2])
-        a = (this.aggressiveness > 0.66 ? 2 : 1) as Action;
+      // Umbrales estadísticos de compra (>0.54) y venta (<0.46)
+      if (prob > 0.54) {
+        a = 2 as Action; // Comprar
+      } else if (prob < 0.46) {
+        a = 0 as Action; // Vender
+      } else {
+        a = 1 as Action; // Mantener
+      }
     }
+
     this.lastAction = a;
     this.lastState = s;
-    this.touch(key);
     return a;
   }
 
-  /** Aprende con eligibility traces (λ-return), experience replay y decaimiento de ε. */
-  learn(s: RlStateInput, a: Action, reward: number, sNext: RlStateInput): void {
-    const key = this.stateKey(s);
-    const qRow = this.row(key);
-    const nextRow = this.row(this.stateKey(sNext));
-    const bestNext = Math.max(nextRow[0], nextRow[1], nextRow[2]);
+  /**
+   * Optimización lineal online mediante gradiente estocástico (SGD) con regularización L2.
+   */
+  learn(s: RlStateInput, a: Action, reward: number, _sNext: RlStateInput): void {
+    const actionDir = a === 2 ? 1 : a === 0 ? -1 : 0;
 
-    const target = reward + this.gamma * bestNext;
-    const delta = target - qRow[a];
+    // Si hubo operación, se optimizan los pesos en dirección del beneficio obtenido
+    if (actionDir !== 0) {
+      const inputs = [s.momentum, s.rsi, s.volatility, s.trend, s.position];
+      const l2 = 0.005; // Coeficiente de regularización L2 para evitar inestabilidad
 
-    this.traceKeys[this.tracePtr] = key;
-    this.traceActions[this.tracePtr] = a;
-    this.tracePtr = (this.tracePtr + 1) % this.TRACE_CAP;
-    if (this.traceLen < this.TRACE_CAP) this.traceLen++;
-
-    const gammaLambda = this.gamma * this.lambda;
-    for (let i = 0; i < this.traceLen; i++) {
-      const age = this.traceLen - 1 - i;
-      const influence = Math.pow(gammaLambda, age);
-      const tKey =
-        this.traceKeys[(this.tracePtr - this.traceLen + i + this.TRACE_CAP) % this.TRACE_CAP];
-      const tAct =
-        this.traceActions[(this.tracePtr - this.traceLen + i + this.TRACE_CAP) % this.TRACE_CAP];
-      const tRow = this.row(tKey);
-      tRow[tAct] += this.alpha * delta * influence;
-    }
-
-    this.expS[this.expPtr][0] = s.momentum;
-    this.expS[this.expPtr][1] = s.rsi;
-    this.expS[this.expPtr][2] = s.volatility;
-    this.expS[this.expPtr][3] = s.trend;
-    this.expS[this.expPtr][4] = s.position;
-    this.expA[this.expPtr] = a;
-    this.expR[this.expPtr] = reward;
-    this.expSN[this.expPtr][0] = sNext.momentum;
-    this.expSN[this.expPtr][1] = sNext.rsi;
-    this.expSN[this.expPtr][2] = sNext.volatility;
-    this.expSN[this.expPtr][3] = sNext.trend;
-    this.expSN[this.expPtr][4] = sNext.position;
-    this.expPtr = (this.expPtr + 1) % 100;
-    if (this.expCount < 100) this.expCount++;
-    if (this.updates % 4 === 0 && this.expCount >= 5) {
-      for (let k = 0; k < 3; k++) {
-        const idx = Math.floor(Math.random() * this.expCount);
-        const sk: RlStateInput = {
-          momentum: this.expS[idx][0],
-          rsi: this.expS[idx][1],
-          volatility: this.expS[idx][2],
-          trend: this.expS[idx][3],
-          position: this.expS[idx][4],
-        };
-        const snk: RlStateInput = {
-          momentum: this.expSN[idx][0],
-          rsi: this.expSN[idx][1],
-          volatility: this.expSN[idx][2],
-          trend: this.expSN[idx][3],
-          position: this.expSN[idx][4],
-        };
-        const rk = this.row(this.stateKey(sk));
-        const nk = this.row(this.stateKey(snk));
-        const bt = this.expR[idx] + this.gamma * Math.max(nk[0], nk[1], nk[2]);
-        rk[this.expA[idx]] += this.alpha * 0.5 * (bt - rk[this.expA[idx]]);
+      for (let i = 0; i < this.weights.length; i++) {
+        const grad = reward * actionDir * inputs[i];
+        this.weights[i] += this.alpha * (grad - l2 * this.weights[i]);
       }
+      this.bias += this.alpha * (reward * actionDir - l2 * this.bias);
     }
 
     this.totalReward += reward;
     this.lastReward = reward;
     this.updates++;
+
     if (this.rewardHistory.length === 0 || this.updates % 4 === 0) {
       this.rewardHistory.push(this.totalReward);
       if (this.rewardHistory.length > 400) this.rewardHistory.shift();
     }
+
+    // Decaimiento de la exploración a largo plazo
     this.epsilon = Math.max(this.epsilonMin, this.epsilon * this.epsilonDecay);
   }
 
   confidence(s: RlStateInput): number {
-    const r = this.row(this.stateKey(s));
-    const mx = Math.max(r[0], r[1], r[2]);
-    const mn = Math.min(r[0], r[1], r[2]);
-    return clamp((mx - mn) * 8, 0, 1);
+    let logit = this.bias +
+      this.weights[0] * s.momentum +
+      this.weights[1] * s.rsi +
+      this.weights[2] * s.volatility +
+      this.weights[3] * s.trend +
+      this.weights[4] * s.position;
+    const prob = sigmoid(logit);
+    return clamp(Math.abs(prob - 0.5) * 2, 0, 1);
   }
 
   snapshot(signal: "buy" | "sell" | "hold"): ModelSnapshot {
-    const prob =
-      this.lastAction === 2
-        ? 0.55 + this.aggressiveness * 0.2
-        : this.lastAction === 0
-          ? 0.45 - this.aggressiveness * 0.2
-          : 0.5;
+    let logit = this.bias +
+      this.weights[0] * this.lastState.momentum +
+      this.weights[1] * this.lastState.rsi +
+      this.weights[2] * this.lastState.volatility +
+      this.weights[3] * this.lastState.trend +
+      this.weights[4] * this.lastState.position;
+
+    const prob = sigmoid(logit);
+
     return {
       probability: clamp(prob, 0.05, 0.95),
       signal,
       confidence: this.confidence(this.lastState),
       sampleCount: this.updates,
-      trainProgress: clamp(this.updates / 5000, 0, 1),
-      lastTrainAt: "Continuo",
+      trainProgress: clamp(this.updates / 2000, 0, 1),
+      lastTrainAt: "Gradiente Online",
       extras: {
         epsilon: this.epsilon,
-        qStates: this.q.size,
+        qStates: this.weights.filter(w => w !== 0).length, // Muestra cuántos coeficientes están activos
         alpha: this.alpha,
         gamma: this.gamma,
         aggressiveness: this.aggressiveness,
+        // Mandamos métricas extra para verificar el estado de los pesos del modelo
+        weightMom: this.weights[0],
+        weightRsi: this.weights[1],
+        weightVol: this.weights[2],
+        weightTrend: this.weights[3],
+        weightPos: this.weights[4]
       },
       lossHistory: [...this.rewardHistory].map((v) => -v),
     };
   }
 
   get tableSize(): number {
-    return this.q.size;
+    return this.weights.length;
   }
 
   toJSON(): unknown {
-    const entries: Array<[number, number[]]> = [];
-    for (const [k, v] of this.q.entries()) {
-      entries.push([k, Array.from(v)]);
-    }
     return {
       alpha: this.alpha,
       gamma: this.gamma,
@@ -293,8 +223,8 @@ export class QLearningAgent implements Tunable {
       lastAction: this.lastAction,
       lastReward: this.lastReward,
       rewardHistory: [...this.rewardHistory],
-      qEntries: entries,
-      visits: Array.from(this.visits.entries()),
+      weights: Array.from(this.weights),
+      bias: this.bias,
       lastState: this.lastState,
     };
   }
@@ -312,29 +242,12 @@ export class QLearningAgent implements Tunable {
     if (typeof d.lastAction === "number") agent.lastAction = clamp(d.lastAction, 0, 2) as Action;
     if (typeof d.lastReward === "number") agent.lastReward = d.lastReward;
     if (Array.isArray(d.rewardHistory)) agent.rewardHistory = d.rewardHistory.map((v) => Number(v));
-    if (Array.isArray(d.qEntries)) {
-      for (const entry of d.qEntries) {
-        if (!Array.isArray(entry) || entry.length !== 2) continue;
-        const [k, v] = entry as [number, number[]];
-        agent.q.set(k, new Float64Array(v.map((n) => Number(n))));
-      }
+    if (Array.isArray(d.weights)) {
+      agent.weights = new Float64Array(d.weights.map((n) => Number(n)));
     }
-    if (Array.isArray(d.visits)) {
-      for (const entry of d.visits) {
-        if (!Array.isArray(entry) || entry.length !== 2) continue;
-        const [k, v] = entry as [number, number];
-        agent.visits.set(k, Number(v));
-      }
-    }
+    if (typeof d.bias === "number") agent.bias = d.bias;
     if (d.lastState && typeof d.lastState === "object") {
-      const s = d.lastState as Record<string, number>;
-      agent.lastState = {
-        momentum: s.momentum ?? 0,
-        rsi: s.rsi ?? 0,
-        volatility: s.volatility ?? 0,
-        trend: s.trend ?? 0,
-        position: s.position ?? 0,
-      };
+      agent.lastState = d.lastState as RlStateInput;
     }
     return agent;
   }
