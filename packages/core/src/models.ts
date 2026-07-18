@@ -1847,3 +1847,208 @@ export class GRUModel implements Tunable {
     return m;
   }
 }
+
+/**
+ * Modelo Estadístico Ultra-Rápido: Random Vector Functional Link (RVFL)
+ * entrenado online mediante Recursive Least Squares (RLS) con factor de olvido.
+ */
+export class RVFLModel implements Tunable {
+  private hiddenSize = 20;
+  private inputSize = 11;
+  private dSize = 31;
+
+  private Win!: Float64Array;
+  private bin!: Float64Array;
+  private wOut!: Float64Array;
+  private P!: Float64Array;
+  private lambda = 0.995;
+
+  private aggressiveness = 0.5;
+  lastProbability = 0.5;
+  private samplesTrained = 0;
+  private lastTrainAt = "";
+
+  buyThreshold = 0.55;
+  sellThreshold = 0.45;
+
+  constructor() {
+    this.initModel();
+  }
+
+  setAggression(level: AggressionLevel): void {
+    this.aggressiveness = aggressionToProfile(level);
+    this.lambda = 0.98 + (1 - this.aggressiveness) * 0.018;
+    const spread = 0.05 + (1 - this.aggressiveness) * 0.03;
+    this.buyThreshold = 0.5 + spread;
+    this.sellThreshold = 0.5 - spread;
+  }
+
+  private initModel(): void {
+    const h = this.hiddenSize;
+    const x = this.inputSize;
+    const d = this.dSize;
+
+    this.Win = new Float64Array(h * x);
+    this.bin = new Float64Array(h);
+    const scale = Math.sqrt(2 / (h + x));
+    for (let i = 0; i < this.Win.length; i++) {
+      this.Win[i] = randomGaussian() * scale;
+    }
+    for (let i = 0; i < h; i++) {
+      this.bin[i] = randomGaussian() * 0.1;
+    }
+
+    this.wOut = new Float64Array(d);
+
+    this.P = new Float64Array(d * d);
+    const delta = 1000.0;
+    for (let i = 0; i < d; i++) {
+      this.P[i * d + i] = delta;
+    }
+    this.samplesTrained = 0;
+    this.lastTrainAt = "Inicializado";
+  }
+
+  private getFeaturesProjection(x: number[]): Float64Array {
+    const h = this.hiddenSize;
+    const z = new Float64Array(this.dSize);
+
+    for (let i = 0; i < h; i++) {
+      let val = this.bin[i];
+      for (let j = 0; j < this.inputSize; j++) {
+        val += this.Win[i * this.inputSize + j] * (x[j] ?? 0);
+      }
+      z[i] = Math.tanh(val);
+    }
+
+    for (let i = 0; i < this.inputSize; i++) {
+      z[h + i] = x[i] ?? 0;
+    }
+    return z;
+  }
+
+  predictProba(x: number[]): number {
+    const z = this.getFeaturesProjection(x);
+    let score = 0;
+    for (let i = 0; i < this.dSize; i++) {
+      score += this.wOut[i] * z[i];
+    }
+    this.lastProbability = clamp(sigmoid(score), 0.05, 0.95);
+    return this.lastProbability;
+  }
+
+  updateOnline(x: number[], y: number): void {
+    const z = this.getFeaturesProjection(x);
+    const d = this.dSize;
+
+    const Pz = new Float64Array(d);
+    for (let i = 0; i < d; i++) {
+      let sum = 0;
+      for (let j = 0; j < d; j++) {
+        sum += this.P[i * d + j] * z[j];
+      }
+      Pz[i] = sum;
+    }
+
+    let zPz = 0;
+    for (let i = 0; i < d; i++) {
+      zPz += z[i] * Pz[i];
+    }
+
+    const den = this.lambda + zPz;
+    const k = new Float64Array(d);
+    for (let i = 0; i < d; i++) {
+      k[i] = Pz[i] / den;
+    }
+
+    let pred = 0;
+    for (let i = 0; i < d; i++) {
+      pred += this.wOut[i] * z[i];
+    }
+    const prob = sigmoid(pred);
+    const e = y - prob;
+
+    for (let i = 0; i < d; i++) {
+      this.wOut[i] += k[i] * e;
+    }
+
+    const zTP = new Float64Array(d);
+    for (let j = 0; j < d; j++) {
+      let sum = 0;
+      for (let i = 0; i < d; i++) {
+        sum += z[i] * this.P[i * d + j];
+      }
+      zTP[j] = sum;
+    }
+
+    const invLambda = 1.0 / this.lambda;
+    for (let i = 0; i < d; i++) {
+      for (let j = 0; j < d; j++) {
+        this.P[i * d + j] = (this.P[i * d + j] - k[i] * zTP[j]) * invLambda;
+      }
+    }
+
+    this.samplesTrained++;
+    if (this.samplesTrained % 100 === 0) {
+      this.lastTrainAt = new Date().toLocaleTimeString("es-ES");
+    }
+  }
+
+  train(X: number[][], rets: number[]): void {
+    this.initModel();
+    for (let i = 0; i < X.length; i++) {
+      const target = rets[i] > 0 ? 1 : 0;
+      this.updateOnline(X[i], target);
+    }
+    this.lastTrainAt = new Date().toLocaleTimeString("es-ES");
+  }
+
+  pickSignal(prob: number): "buy" | "sell" | "hold" {
+    if (prob > this.buyThreshold) return "buy";
+    if (prob < this.sellThreshold) return "sell";
+    return "hold";
+  }
+
+  snapshot(_signal?: "buy" | "sell" | "hold", _featNames?: string[]): ModelSnapshot {
+    return {
+      probability: this.lastProbability,
+      signal: _signal ?? this.pickSignal(this.lastProbability),
+      confidence: clamp(Math.abs(this.lastProbability - 0.5) * 2, 0, 1),
+      sampleCount: this.samplesTrained,
+      trainProgress: 1.0,
+      lastTrainAt: this.lastTrainAt || "—",
+      extras: {
+        lambda: this.lambda,
+        hiddenSize: this.hiddenSize,
+        aggressiveness: this.aggressiveness,
+      }
+    };
+  }
+
+  toJSON(): unknown {
+    return {
+      aggressiveness: this.aggressiveness,
+      lastProbability: this.lastProbability,
+      samplesTrained: this.samplesTrained,
+      lastTrainAt: this.lastTrainAt,
+      wOut: Array.from(this.wOut),
+      P: Array.from(this.P),
+      Win: Array.from(this.Win),
+      bin: Array.from(this.bin),
+    };
+  }
+
+  static fromJSON(data: unknown): RVFLModel {
+    const d = data as Record<string, unknown>;
+    const m = new RVFLModel();
+    if (typeof d.aggressiveness === "number") m.aggressiveness = d.aggressiveness;
+    if (typeof d.lastProbability === "number") m.lastProbability = d.lastProbability;
+    if (typeof d.samplesTrained === "number") m.samplesTrained = d.samplesTrained;
+    if (typeof d.lastTrainAt === "string") m.lastTrainAt = d.lastTrainAt;
+    if (Array.isArray(d.wOut)) m.wOut = new Float64Array(d.wOut.map(Number));
+    if (Array.isArray(d.P)) m.P = new Float64Array(d.P.map(Number));
+    if (Array.isArray(d.Win)) m.Win = new Float64Array(d.Win.map(Number));
+    if (Array.isArray(d.bin)) m.bin = new Float64Array(d.bin.map(Number));
+    return m;
+  }
+}

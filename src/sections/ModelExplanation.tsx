@@ -5,6 +5,7 @@ import {
   BarChart3,
   GitBranch,
   Layers,
+  Cpu,
   BookOpen,
   RefreshCw,
   SlidersHorizontal,
@@ -89,6 +90,19 @@ const explanations: Record<
       "Cada 50 ticks (≈50 min) se reentrena con 20 pasos de BPTT sobre los datos más recientes. Los pesos se actualizan directamente, por lo que el modelo adapta gradualmente su comportamiento a los nuevos patrones del mercado sin necesidad de añadir capas.",
     tuner:
       "Cambia el tamaño del estado oculto (10–18 neuronas), la tasa de aprendizaje (0.002–0.008), la longitud de secuencia (12–20 pasos) y los umbrales de señal. Agresivo = red más grande que captura más patrones; conservador = red más pequeña y secuencias más cortas para generalizar mejor.",
+  },
+  rvfl: {
+    icon: <Cpu className="h-5 w-5" />,
+    what:
+      "Random Vector Functional Link (RVFL) es una red neuronal de una capa oculta con proyección aleatoria fija. Los pesos de la capa oculta (W_in, b_in) se inicializan con distribución Xavier y nunca se actualizan. La capa oculta tiene 20 neuronas con activación tanh. Las 11 features de entrada se conectan directamente a la salida (direct links), dando un total de 31 pesos entrenables. Produce P(subida) = σ(w·φ(x)) donde φ(x) = [tanh(W_in·x+b_in), x].",
+    train:
+      "Los pesos de la capa oculta se fijan al inicializar con distribución Xavier uniforme. Los pesos de salida se entrenan usando Recursive Least Squares (RLS) online: en cada tick se actualiza la matriz de covarianza P (31×31) y el vector de pesos w mediante la ganancia de Kalman. El factor de olvido λ=0.995 da más peso a observaciones recientes. Inicialización P = δI con δ=1000.",
+    learn:
+      "RLS es un algoritmo de aprendizaje online que minimiza el error cuadrático ponderado exponencialmente. En cada paso: (1) calcula la ganancia de Kalman k = Pz/(λ + z^T P z); (2) actualiza w ← w + k(y - w^T z); (3) actualiza P ← (P - kz^T P)/λ. Esto permite adaptarse rápidamente a cambios en la distribución de los datos sin necesidad de batches.",
+    retrain:
+      "No requiere reentrenamiento por lotes. RLS actualiza los pesos en cada tick online. La matriz de covarianza P se reinicia si se detecta degeneración numérica. El factor de olvido λ=0.995 limita la memoria efectiva a ~200 pasos, permitiendo adaptación a regímenes de mercado cambiantes.",
+    tuner:
+      "El tuner controla los umbrales de señal (±0.02 desde 0.5) y el factor de olvido λ (0.98–0.998). Más agresivo reduce el umbral (opera más) y baja λ (más adaptativo). Conservador amplía el umbral y sube λ (más memoria, menos adaptación). El tamaño de la capa oculta (20) y los pesos aleatorios son fijos.",
   },
 };
 

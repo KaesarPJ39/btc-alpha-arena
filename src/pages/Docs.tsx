@@ -1,4 +1,4 @@
-import { BrainCircuit, LineChart, Sigma, TreePine, Network, Activity, AlertTriangle } from "lucide-react";
+import { BrainCircuit, LineChart, Sigma, TreePine, Network, Cpu, Activity, AlertTriangle } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { MODEL_IDS, MODELS, type ModelId } from "@/lib/registry";
 
@@ -148,6 +148,41 @@ const DOCS: DocEntry[] = [
       "Implementación propia en JavaScript: el backend permite escalar a secuencias más largas y estados ocultos " +
       "mayores. La versión actual usa 10-18 neuronas para mantener latencia baja en el simulador.",
   },
+  {
+    id: "rvfl",
+    icon: Cpu,
+    title: "RVFL — Random Vector Functional Link con RLS",
+    subtitle: "Red de una capa oculta con proyección aleatoria fija y pesos de salida entrenados por RLS online",
+    howItWorks:
+      "RVFL (Random Vector Functional Link) es una red neuronal de una sola capa oculta donde los pesos de " +
+      "la proyección aleatoria (W_in, b_in) se fijan al inicializar con distribución Xavier uniforme y nunca se " +
+      "actualizan. La capa oculta tiene 20 neuronas con activación tanh. Adicionalmente, las 11 features de " +
+      "entrada se conectan directamente a la salida (direct links), dando un total de 31 pesos entrenables. " +
+      "El entrenamiento usa Recursive Least Squares (RLS) online: en cada tick se actualiza la matriz de covarianza " +
+      "P (31×31) y el vector de pesos w mediante la ganancia de Kalman, con un factor de olvido λ=0.995 que " +
+      "da más peso a observaciones recientes. Produce P(subida) = σ(w·φ(x)) donde φ(x) = [tanh(W_in·x+b_in), x] " +
+      "es la expansión no lineal + lineal concatenada.",
+    hyperparams: [
+      "hidden_units: 20 (fijo)",
+      "direct_links: 11 (features de entrada conectadas directamente a salida)",
+      "λ (factor de olvido RLS): 0.995",
+      "δ (inicialización P): 100.0 (confianza inicial alta en pesos ≈ 0)",
+      "Pesos ocultos W_in: fijos, inicializados con Xavier uniforme",
+      "Activación oculta: tanh",
+      "Salida: sigmoide logística",
+    ],
+    aggressiveness:
+      "El RVFL no tiene hiperparámetros de agresividad propios; se adapta automáticamente vía RLS al flujo " +
+      "de datos. El umbral de señal (±0.02 desde 0.5) lo controla el tuner global: más agresivo reduce " +
+      "el umbral (opera más), conservador lo amplía (solo señales fuertes). El factor de olvido λ=0.995 " +
+      "es fijo para mantener la estabilidad numérica de RLS.",
+    caveats:
+      "RVFL es un modelo muy eficiente computacionalmente (O(n²) con n=31) pero su capacidad está limitada " +
+      "por la proyección aleatoria fija. Si la distribución de los datos cambia drásticamente, la proyección " +
+      "puede no ser representativa. RLS puede volverse numéricamente inestable si P se degenera; " +
+      "en ese caso se aplica reinicio de P = δI. El factor de olvido λ < 1 evita saturación pero limita " +
+      "la memoria efectiva a ~1/(1-λ) = 200 pasos.",
+  },
 ];
 
 const ICONS: Record<ModelId, LucideIcon> = {
@@ -156,6 +191,7 @@ const ICONS: Record<ModelId, LucideIcon> = {
   stat: Sigma,
   rf: TreePine,
   gru: Network,
+  rvfl: Cpu,
 };
 
 export function DocsPage() {
@@ -262,7 +298,7 @@ export function DocsPage() {
       <section className="glass-card rounded-2xl p-5">
         <h3 className="mb-3 text-sm font-bold tracking-tight">Sobre la arena</h3>
         <p className="text-[12px] leading-relaxed text-muted-foreground">
-          La arena ejecuta los 5 modelos en paralelo, cada uno con su propia cuenta de crédito $100,000 al 9.5% TAE.
+          La arena ejecuta los 6 modelos en paralelo, cada uno con su propia cuenta de crédito $100,000 al 9.5% TAE.
           Comparan contra un benchmark Buy & Hold que compra BTC al inicio y mantiene el mismo interés del crédito.
           Esto permite ver si los modelos ganan <span className="font-semibold">neto de coste financiero y comisiones (0.10%)</span>.
         </p>

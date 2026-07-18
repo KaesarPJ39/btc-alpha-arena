@@ -1,4 +1,4 @@
-import { BrainCircuit, LineChart, Sigma, TreePine, Network, TrendingDown, TrendingUp, type LucideIcon } from "lucide-react";
+import { BrainCircuit, LineChart, Sigma, TreePine, Network, Cpu, TrendingDown, TrendingUp, type LucideIcon } from "lucide-react";
 import type { AgentMetrics } from "@/lib/engine";
 import { LOAN_PRINCIPAL } from "@/lib/engine";
 import { fmtBTC, fmtPct, fmtUSD } from "@/lib/format";
@@ -11,6 +11,7 @@ const ICONS: Record<ModelId, LucideIcon> = {
   stat: Sigma,
   rf: TreePine,
   gru: Network,
+  rvfl: Cpu,
 };
 
 interface Props {

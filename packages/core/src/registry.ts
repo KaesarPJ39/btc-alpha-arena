@@ -1,6 +1,6 @@
 // ── Tipos y configuración central del BTC Alpha Arena ────────────────────────
 
-export type ModelId = "rl" | "xgb" | "stat" | "rf" | "gru";
+export type ModelId = "rl" | "xgb" | "stat" | "rf" | "gru" | "rvfl";
 
 export type AggressionLevel = 0 | 1 | 2 | 3 | 4;
 
@@ -94,9 +94,22 @@ export const MODELS: Record<ModelId, ModelMeta> = {
     tailwindBar: "[&>div]:bg-pink-500",
     tailwindRing: "ring-pink-500/30",
   },
+  rvfl: {
+    id: "rvfl",
+    name: "RVFL",
+    shortName: "RVFL",
+    category: "Random Vector Functional Link",
+    description: "Red RVFL con proyección aleatoria y RLS online",
+    fullName: "RVFL · random vector functional link + recursive least squares",
+    colorHex: "#14b8a6",
+    tailwindText: "text-teal-400",
+    tailwindBadge: "bg-teal-500/10 text-teal-300 border-teal-500/30",
+    tailwindBar: "[&>div]:bg-teal-500",
+    tailwindRing: "ring-teal-500/30",
+  },
 };
 
-export const MODEL_IDS: ModelId[] = ["rl", "xgb", "stat", "rf", "gru"];
+export const MODEL_IDS: ModelId[] = ["rl", "xgb", "stat", "rf", "gru", "rvfl"];
 
 /**
  * Mapea el nivel de agresividad (0..4) → perfil continuo [0..1].

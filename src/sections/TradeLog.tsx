@@ -22,7 +22,7 @@ export function TradeLog({ snap }: Props) {
       <div className="mb-4 flex items-center justify-between">
         <div>
           <h3 className="text-sm font-bold tracking-tight">Log de operaciones recientes</h3>
-          <p className="text-[11px] text-muted-foreground">Últimas 50 señales ejecutadas por los 5 modelos</p>
+          <p className="text-[11px] text-muted-foreground">Últimas 50 señales ejecutadas por los 6 modelos</p>
         </div>
         <div className="text-right text-[10px] text-muted-foreground">
           Total ops: <span className="font-medium text-foreground">{snap.trades.length}</span>

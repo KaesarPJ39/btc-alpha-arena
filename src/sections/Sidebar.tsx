@@ -1,15 +1,16 @@
 import { NavLink } from "react-router";
-import { Swords, BrainCircuit, LineChart, Sigma, TreePine, Network, BookOpen } from "lucide-react";
+import { Swords, BrainCircuit, LineChart, Sigma, TreePine, Network, Cpu, BookOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MODEL_IDS, MODELS } from "@/lib/registry";
 
 const NAV = [
-  { to: "/arena", label: "Arena", icon: Swords, hint: "Comparativa de los 5 modelos" },
+  { to: "/arena", label: "Arena", icon: Swords, hint: "Comparativa de los 6 modelos" },
   { to: "/model/rl", label: "Agente RL", icon: BrainCircuit, hint: MODELS.rl.description },
   { to: "/model/xgb", label: "XGBoost", icon: LineChart, hint: MODELS.xgb.description },
   { to: "/model/stat", label: "Statistical", icon: Sigma, hint: MODELS.stat.description },
   { to: "/model/rf", label: "Random Forest", icon: TreePine, hint: MODELS.rf.description },
   { to: "/model/gru", label: "GRU", icon: Network, hint: MODELS.gru.description },
+  { to: "/model/rvfl", label: "RVFL", icon: Cpu, hint: MODELS.rvfl.description },
   { to: "/docs", label: "Documentación", icon: BookOpen, hint: "Cómo funciona cada modelo" },
 ] as const;
 
@@ -65,7 +66,7 @@ export function Sidebar() {
       </nav>
       <div className="mt-6 rounded-xl border border-border/40 bg-secondary/30 px-3 py-3 text-[10px] leading-relaxed text-muted-foreground">
         <p className="font-semibold text-foreground/80">BTC Alpha Arena</p>
-        <p className="mt-1">5 modelos ML/RRL ejecutándose en el navegador. Precios reales BTC/USD vía API pública.</p>
+        <p className="mt-1">6 modelos ML/RRL ejecutándose en el navegador. Precios reales BTC/USD vía API pública.</p>
       </div>
     </aside>
   );

@@ -7,6 +7,7 @@ import {
   StatisticalModel,
   RandomForestModel,
   GRUModel,
+  RVFLModel,
   ACTION_NAMES,
   type Action,
   type ModelSnapshot,
@@ -40,6 +41,7 @@ export interface EquityPoint {
   stat: number;
   rf: number;
   gru: number;
+  rvfl: number;
   bh: number;
   price: number;
   live: boolean;
@@ -380,7 +382,8 @@ type AnyModel =
   | GradientBoostingModel
   | StatisticalModel
   | RandomForestModel
-  | GRUModel;
+  | GRUModel
+  | RVFLModel;
 
 export class TradingEngine {
   accounts: Record<ModelId, MarginAccount> = {
@@ -389,6 +392,7 @@ export class TradingEngine {
     stat: new MarginAccount("stat"),
     rf: new MarginAccount("rf"),
     gru: new MarginAccount("gru"),
+    rvfl: new MarginAccount("rvfl"),
   };
   private bhBtc = 0;
   private bhInterest = 0;
@@ -398,6 +402,7 @@ export class TradingEngine {
   private statModel = new StatisticalModel();
   private rfModel = new RandomForestModel();
   private gruModel = new GRUModel();
+  private rvflModel = new RVFLModel();
 
   private modelLookup: Record<ModelId, AnyModel> = {
     rl: this.rlAgent,
@@ -405,6 +410,7 @@ export class TradingEngine {
     stat: this.statModel,
     rf: this.rfModel,
     gru: this.gruModel,
+    rvfl: this.rvflModel,
   };
 
   riskManager = new RiskManager();
@@ -415,6 +421,7 @@ export class TradingEngine {
     stat: 2,
     rf: 2,
     gru: 2,
+    rvfl: 2,
   };
 
   closes: number[] = [];
@@ -444,6 +451,7 @@ export class TradingEngine {
     stat: "hold",
     rf: "hold",
     gru: "hold",
+    rvfl: "hold",
   };
   private lastProbabilities: Record<ModelId, number> = {
     rl: 0.5,
@@ -451,6 +459,7 @@ export class TradingEngine {
     stat: 0.5,
     rf: 0.5,
     gru: 0.5,
+    rvfl: 0.5,
   };
   private lastStatOutcome: boolean | undefined = undefined;
 
@@ -509,14 +518,14 @@ export class TradingEngine {
       if (gen !== this.startGeneration) return;
       this.trainInitialModels(this.closes.length - 2);
 
-      this.statusDetail = "Backtest walk-forward: 5 modelos…";
+      this.statusDetail = "Backtest walk-forward: 6 modelos…";
       this.emit();
       this.bhBtc = LOAN_PRINCIPAL / this.closes[WARMUP];
       for (let i = WARMUP; i < this.closes.length; i++) {
         if (this.aborted || gen !== this.startGeneration) return;
         this.step(i, 60, false);
         if (i % 40 === 0) {
-          this.statusDetail = `Backtest ${Math.round(((i - WARMUP) / (this.closes.length - WARMUP)) * 100)}% · 5 modelos`;
+          this.statusDetail = `Backtest ${Math.round(((i - WARMUP) / (this.closes.length - WARMUP)) * 100)}% · 6 modelos`;
           this.emit();
           await sleep(0);
         }
@@ -531,6 +540,7 @@ export class TradingEngine {
           stat: new MarginAccount("stat"),
           rf: new MarginAccount("rf"),
           gru: new MarginAccount("gru"),
+          rvfl: new MarginAccount("rvfl"),
         };
         this.equitySeries = [];
         this.trades = [];
@@ -573,6 +583,7 @@ export class TradingEngine {
       stat: new MarginAccount("stat"),
       rf: new MarginAccount("rf"),
       gru: new MarginAccount("gru"),
+      rvfl: new MarginAccount("rvfl"),
     };
 
     this.rlAgent = new QLearningAgent();
@@ -580,12 +591,14 @@ export class TradingEngine {
     this.statModel = new StatisticalModel();
     this.rfModel = new RandomForestModel();
     this.gruModel = new GRUModel();
+    this.rvflModel = new RVFLModel();
     this.modelLookup = {
       rl: this.rlAgent,
       xgb: this.xgbModel,
       stat: this.statModel,
       rf: this.rfModel,
       gru: this.gruModel,
+      rvfl: this.rvflModel,
     };
     MODEL_IDS.forEach((id) => this.modelLookup[id].setAggression(this.aggressionPerModel[id]));
 
@@ -601,8 +614,8 @@ export class TradingEngine {
     this.running = true;
     this.bhBtc = 0;
     this.bhInterest = 0;
-    this.lastSignals = { rl: "hold", xgb: "hold", stat: "hold", rf: "hold", gru: "hold" };
-    this.lastProbabilities = { rl: 0.5, xgb: 0.5, stat: 0.5, rf: 0.5, gru: 0.5 };
+    this.lastSignals = { rl: "hold", xgb: "hold", stat: "hold", rf: "hold", gru: "hold", rvfl: "hold" };
+    this.lastProbabilities = { rl: 0.5, xgb: 0.5, stat: 0.5, rf: 0.5, gru: 0.5, rvfl: 0.5 };
     this.lastStatOutcome = undefined;
     this.market = { price: 0, change24h: 0, high24h: 0, low24h: 0, volume24h: 0, source: "—", lastUpdate: 0 };
 
@@ -630,6 +643,7 @@ export class TradingEngine {
     this.xgbModel.train(X, rets);
     this.rfModel.train(X, rets);
     this.gruModel.train(X, rets, 80);
+    this.rvflModel.train(X, rets);
   }
 
   private retrainIncrementalModels(): void {
@@ -645,6 +659,8 @@ export class TradingEngine {
     this.xgbModel.retrainIncremental(X, rets, 4);
     this.rfModel.addTrees(X, rets, 6);
     if (this.ticks % (RETRAIN_EVERY_TICKS * 2) === 0) this.gruModel.train(X, rets, 20);
+    // RVFL re-entrena completo en batch (rápido por RLS cerrado)
+    this.rvflModel.train(X, rets);
   }
 
   private rlState(i: number, acc: MarginAccount, price: number) {
@@ -815,6 +831,23 @@ export class TradingEngine {
       }
     }
 
+    // ── RVFL ──
+    const probRvfl = this.rvflModel.predictProba(f);
+    this.lastProbabilities.rvfl = probRvfl;
+    const sigRvfl = this.rvflModel.pickSignal(probRvfl);
+    this.lastSignals.rvfl = sigRvfl;
+    if (sigRvfl !== "hold" && ts - this.accounts.rvfl.lastTradeTs >= COOLDOWN_MS && this.accounts.rvfl.pauseTicks === 0) {
+      if (sigRvfl === "buy" && this.canBuy(this.accounts.rvfl, price)) {
+        this.openPosition("rvfl", "long", price, ts, Math.abs(probRvfl - 0.5) * 2, `RVFL P=${(probRvfl * 100).toFixed(1)}%`);
+      } else if (sigRvfl === "sell" && this.canSell(this.accounts.rvfl, price)) {
+        this.openPosition("rvfl", "short", price, ts, Math.abs(probRvfl - 0.5) * 2, `RVFL P=${(probRvfl * 100).toFixed(1)}%`);
+      }
+    }
+    // Online update supervisado: aprende de la dirección real del precio
+    const rvflNextIdx = Math.min(i + 1, this.minuteCloses.length - 1);
+    const rvflNextPrice = live ? price : this.minuteCloses[rvflNextIdx];
+    this.rvflModel.updateOnline(f, rvflNextPrice > price ? 1 : 0);
+
     this.recordEquity(price, ts, live);
   }
 
@@ -827,6 +860,7 @@ export class TradingEngine {
       stat: this.accounts.stat.net(price),
       rf: this.accounts.rf.net(price),
       gru: this.accounts.gru.net(price),
+      rvfl: this.accounts.rvfl.net(price),
       bh: this.bhBtc * price - this.bhInterest,
       price,
       live,
@@ -946,6 +980,7 @@ export class TradingEngine {
       stat: this.statModel.snapshot(),
       rf: this.rfModel.snapshot(featNames),
       gru: this.gruModel.snapshot(featNames),
+      rvfl: this.rvflModel.snapshot(this.lastSignals.rvfl, featNames),
     };
     MODEL_IDS.forEach((id) => {
       modelInfo[id] = {
@@ -955,7 +990,8 @@ export class TradingEngine {
           : id === "xgb" ? "XGBoost"
           : id === "stat" ? "Statistical"
           : id === "rf" ? "Random Forest"
-          : "GRU",
+          : id === "gru" ? "GRU"
+          : "RVFL",
         aggression: this.aggressionPerModel[id],
       };
     });
@@ -989,7 +1025,7 @@ export class TradingEngine {
   }
 
   /** Replace a model instance (used by Web Worker retraining in local mode). */
-  replaceModel(id: "xgb" | "rf" | "gru" | "stat", model: AnyModel): void {
+  replaceModel(id: "xgb" | "rf" | "gru" | "stat" | "rvfl", model: AnyModel): void {
     if (id === "xgb" && model instanceof GradientBoostingModel) {
       this.xgbModel = model;
     } else if (id === "rf" && model instanceof RandomForestModel) {
@@ -998,6 +1034,8 @@ export class TradingEngine {
       this.gruModel = model;
     } else if (id === "stat" && model instanceof StatisticalModel) {
       this.statModel = model;
+    } else if (id === "rvfl" && model instanceof RVFLModel) {
+      this.rvflModel = model;
     } else {
       throw new Error(`Invalid model replacement for ${id}`);
     }
@@ -1015,6 +1053,7 @@ export class TradingEngine {
         stat: this.statModel.toJSON(),
         rf: this.rfModel.toJSON(),
         gru: this.gruModel.toJSON(),
+        rvfl: this.rvflModel.toJSON(),
       },
     };
   }
@@ -1025,11 +1064,12 @@ export class TradingEngine {
     }
     try {
       const hasModels =
-        state.models?.xgb || state.models?.rf || state.models?.gru || state.models?.stat;
+        state.models?.xgb || state.models?.rf || state.models?.gru || state.models?.stat || state.models?.rvfl;
       if (state.models?.xgb) this.xgbModel = GradientBoostingModel.fromJSON(state.models.xgb);
       if (state.models?.rf) this.rfModel = RandomForestModel.fromJSON(state.models.rf);
       if (state.models?.gru) this.gruModel = GRUModel.fromJSON(state.models.gru);
       if (state.models?.stat) this.statModel = StatisticalModel.fromJSON(state.models.stat);
+      if (state.models?.rvfl) this.rvflModel = RVFLModel.fromJSON(state.models.rvfl);
       if (state.models?.rl && Object.keys(state.models.rl as object).length > 0) {
         this.rlAgent = QLearningAgent.fromJSON(state.models.rl);
       }
@@ -1039,6 +1079,7 @@ export class TradingEngine {
         stat: this.statModel,
         rf: this.rfModel,
         gru: this.gruModel,
+        rvfl: this.rvflModel,
       };
       if (hasModels) this.modelsLoaded = true;
     } catch {

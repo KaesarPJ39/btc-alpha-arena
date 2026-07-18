@@ -33,9 +33,9 @@ export function ArenaPage({ snap }: Props) {
             <Swords className="h-5 w-5 text-amber-400" />
           </div>
           <div className="min-w-0 flex-1">
-            <h2 className="text-sm font-bold tracking-tight">Arena · Batalla de 5 modelos</h2>
+            <h2 className="text-sm font-bold tracking-tight">Arena · Batalla de 6 modelos</h2>
             <p className="text-[11px] text-muted-foreground">
-              Q-Learning · Gradient Boosting · Statistical · Random Forest · GRU · comparando en vivo contra Buy & Hold
+              Q-Learning · Gradient Boosting · Statistical · Random Forest · GRU · RVFL · comparando en vivo contra Buy & Hold
             </p>
           </div>
           <div className="text-right">
@@ -78,7 +78,7 @@ export function ArenaPage({ snap }: Props) {
         </div>
       </section>
 
-      {/* Tarjetas de modelo (5) */}
+      {/* Tarjetas de modelo (6) */}
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         {MODEL_IDS.map((id) => (
           <AgentCard

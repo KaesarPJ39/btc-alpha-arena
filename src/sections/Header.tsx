@@ -256,7 +256,7 @@ export function Header({ market, status, statusDetail, running, onToggle, onRese
               <div>
                 <h3 className="text-sm font-bold">Reiniciar simulación</h3>
                 <p className="text-[11px] text-muted-foreground">
-                  Se borrarán todos los datos de los 5 modelos
+                  Se borrarán todos los datos de los 6 modelos
                 </p>
               </div>
             </div>

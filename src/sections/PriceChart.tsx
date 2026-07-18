@@ -56,7 +56,7 @@ export function PriceChart({ data, trades }: Props) {
         <div>
           <h3 className="text-sm font-bold tracking-tight">BTC/USD · ejecuciones</h3>
           <p className="text-[11px] text-muted-foreground">
-            Precio real con marcadores de compra/venta de los 5 modelos
+            Precio real con marcadores de compra/venta de los 6 modelos
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-[10px] text-muted-foreground">
