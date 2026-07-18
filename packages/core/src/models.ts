@@ -629,7 +629,7 @@ export class GradientBoostingModel implements Tunable {
 
   /** Entrena 3 sub-modelos para horizontes 1, 5 y 15 barras. `returns` debe estar alineado con X. */
   train(X: number[][], returns: number[]): void {
-    if (X.length < 30 || returns.length < X.length + 1) {
+    if (X.length < 30 || returns.length < X.length) {
       this.lastTrainAt = new Date().toLocaleTimeString("es-ES");
       return;
     }
@@ -702,7 +702,7 @@ export class GradientBoostingModel implements Tunable {
   }
 
   retrainIncremental(X: number[][], returns: number[], extraTrees = 8): void {
-    if (X.length < 30 || returns.length < X.length + 1 || this.totalTreeCount() === 0) {
+    if (X.length < 30 || returns.length < X.length || this.totalTreeCount() === 0) {
       this.train(X, returns);
       return;
     }
@@ -1098,7 +1098,7 @@ export class RandomForestModel implements Tunable {
     }
     const preds = this.predictions(x);
     const meanPred = preds.reduce((a, b) => a + b, 0) / preds.length;
-    this.lastProbability = clamp(sigmoid(meanPred * 10), 0.05, 0.95);
+    this.lastProbability = clamp(sigmoid(meanPred * 500), 0.05, 0.95);
     return this.lastProbability;
   }
 
@@ -1715,7 +1715,7 @@ export class GRUModel implements Tunable {
     for (let step = 0; step < nSteps; step++) {
       const start = Math.floor(Math.random() * (sub.length - this.seqLength - 1));
       const seq = sub.slice(start, start + this.seqLength);
-      const target = y[start + this.seqLength];
+      const target = y[start + this.seqLength] > 0 ? 1 : 0;
       const fwd = this.forward(seq, true);
       totalLoss += this.bptt(seq, target, fwd.cache);
       this.trainingSteps++;

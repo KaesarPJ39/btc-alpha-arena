@@ -728,7 +728,7 @@ export class TradingEngine {
     const COOLDOWN_MS = live ? 30_000 : 120_000;
     const featureSeq = live
       ? this.featuresMatrix.slice(-Math.max(20, this.gruModel["seqLength"] + 1))
-      : this.featuresMatrix.slice(Math.max(0, i - 23), i + 1);
+      : this.featuresMatrix.slice(Math.max(0, i - Math.max(20, this.gruModel["seqLength"] + 1)), i + 1);
 
     // Risk management: close positions that hit stops first
     MODEL_IDS.forEach((id) => this.closeRiskManagedPositions(id, price, ts));
